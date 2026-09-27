@@ -620,14 +620,24 @@ class Handler(BaseHTTPRequestHandler):
             headers={"Content-Type": "application/json",
                      "Authorization": "Bearer " + key,
                      "Accept": "text/event-stream"})
-        # 流式透传：上游开始吐字后不会再读超时；首字节前的等待上限 180s
-        try:
-            up = urllib.request.urlopen(req, timeout=180)
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:500]
-            return self._send(502, json.dumps({"error": f"上游 API 错误 {e.code}: {detail}"}))
-        except Exception as e:
-            return self._send(502, json.dumps({"error": f"请求失败: {e}"}))
+        # 流式透传：上游开始吐字后不会再读超时；首字节前的等待上限 180s。
+        # 上游偶发 5xx/限流：重试 3 次（首字节失败才重试，流开始后不重试）
+        up = None
+        last_err = None
+        for attempt in range(3):
+            try:
+                up = urllib.request.urlopen(req, timeout=180)
+                break
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode(errors="replace")[:300]
+                last_err = f"上游 API 错误 {e.code}: {detail}"
+                if e.code < 500 and e.code != 429:
+                    break  # 4xx（除限流）不重试
+            except Exception as e:
+                last_err = f"请求失败: {e}"
+            time.sleep(1.0 * (attempt + 1))
+        if up is None:
+            return self._send(502, json.dumps({"error": last_err + "（已重试 3 次；若持续失败请检查接口额度/状态）"}))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")

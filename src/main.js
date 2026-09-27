@@ -439,7 +439,14 @@ async function sendChat(extraContext) {
     }
     clearTimeout(flushTimer);
     if ((current ? current.file : null) !== askFile) return; // 流结束前切题，丢弃
-    pending.innerHTML = renderMd(reply || "(空回复)"); decorateMsg(pending);
+    if (!reply.trim()) {
+      // 上游限流/不稳定时会给出空流：不入历史，给可操作提示
+      pending.className = "msg error";
+      pending.textContent = "⚠ 上游返回了空回复（接口可能限流或不稳定）。请重试，或在 ⚙ 检查接口状态。";
+      chatHistory.pop(); // 移除这条没有回答的用户消息，保持历史干净
+      return;
+    }
+    pending.innerHTML = renderMd(reply); decorateMsg(pending);
     chatHistory.push({ role: "assistant", content: reply });
     saveChat();
   } catch (e) {
