@@ -81,10 +81,11 @@ export function createEditor({ parent, doc, fileUri, rootUri, onRun, onChange })
     transport,
   });
 
-  const runKeymap = keymap.of([{
+  // 注意：必须是绑定数组（不能再包一层 keymap.of，否则嵌套扩展被忽略）
+  const runBinding = {
     key: "Mod-Enter",
     run: () => { onRun && onRun(); return true; },
-  }]);
+  };
 
   const state = EditorState.create({
     doc,
@@ -95,9 +96,9 @@ export function createEditor({ parent, doc, fileUri, rootUri, onRun, onChange })
       indentOnInput(), bracketMatching(), closeBrackets(), autocompletion(),
       highlightActiveLine(), highlightSelectionMatches(),
       lintGutter(),
-      keymap.of([indentWithTab, ...closeBracketsKeymap, ...defaultKeymap,
+      keymap.of([runBinding, indentWithTab, ...closeBracketsKeymap, ...defaultKeymap,
                  ...historyKeymap, ...foldKeymap, ...completionKeymap,
-                 ...lintKeymap, runKeymap]),
+                 ...lintKeymap]),
       zigLanguage,
       zigHighlight,
       darkTheme,

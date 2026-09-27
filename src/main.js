@@ -560,6 +560,14 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   $("#tab-" + t.dataset.tab).classList.add("active");
 });
 $("#btnRun").onclick = run;
+// 全局快捷键：焦点不在编辑器（如聊天框、说明区）时也能 Ctrl/Cmd+Enter 运行
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    // 编辑器内已由 CodeMirror keymap 处理；这里兜底其它区域
+    const inEditor = document.querySelector(".cm-content")?.contains(document.activeElement);
+    if (!inEditor) { e.preventDefault(); run(); }
+  }
+});
 $("#btnSubmit").onclick = submit;
 $("#btnPrev").onclick = () => nav(-1);
 $("#btnNext").onclick = () => nav(1);
