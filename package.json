@@ -1,0 +1,28 @@
+{
+  "name": "ziglings-web",
+  "version": "1.0.0",
+  "description": "基于 [Ziglings](https://codeberg.org/ziglings/exercises/) 题库的本地 Web 学习环境： 阅读题目说明 → 在浏览器里改代码 → 一键编译运行 → 自动判题 → AI 助教答疑 → 查阅 std 文档。",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --minify --outfile=web/dist/bundle.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
+    "@lezer/highlight": "^1.2.4",
+    "codemirror": "^6.0.2",
+    "codemirror-languageserver": "^1.22.1",
+    "dompurify": "^3.4.16",
+    "esbuild": "^0.28.2",
+    "marked": "^18.0.14"
+  }
+}

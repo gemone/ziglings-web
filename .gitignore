@@ -1,0 +1,21 @@
+# 依赖与构建产物（npm run build 可重建）
+node_modules/
+.npmcache/
+web/dist/
+
+# 运行时数据（用户草稿、进度、提交、AI 配置）
+work/
+
+# zig 编译缓存
+.zigcache/
+
+# 上游题库（启动时自动克隆/可 tools/sync.sh 同步）
+ziglings/
+
+# 系统文件
+.DS_Store
+*.log
+
+__pycache__/
+output/
+web/app.js
