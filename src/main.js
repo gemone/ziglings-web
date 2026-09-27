@@ -252,7 +252,7 @@ function saveDraft() {
 /* ---------- run & submit ---------- */
 /* 程序参数输入（实验场 / cookbook 显示） */
 function syncArgsInput() {
-  const box = $("#argsBox");
+  const box = $("#argsInput");
   if (!box) return;
   box.style.display = current && (current.scratch || current.file.startsWith("cookbook_")) ? "" : "none";
 }
@@ -271,7 +271,7 @@ function renderBgChips() {
   for (const [rid, meta] of bgRuns) {
     const chip = document.createElement("span");
     chip.className = "bg-chip" + (rid === focusedRun ? " active" : "");
-    chip.innerHTML = `<span class="dot ${meta.running ? "run" : "done"}"></span>${meta.title}` +
+    chip.innerHTML = `<span class="dot ${meta.running ? "run" : "done"}"></span>${escapeHtml(meta.title)}` +
       (meta.port ? ` <b>:${meta.port}</b>` : "");
     chip.onclick = () => { focusedRun = rid; renderBgChips(); pollBgOnce(rid, true); };
     const stop = document.createElement("button");
@@ -670,7 +670,8 @@ function renderRefLinks() {
       [...apis].map(a => `🔸 <a href="#" class="std-jump" data-sym="${a}">${a}</a>`).join("<br>");
   }
   $("#refLinks").innerHTML = html || t("noSpecificRef");
-  $("#cheatsheet").innerHTML = hits.map(h =>
+  const withCode = hits.filter(h => h.code);
+  $("#cheatsheet").innerHTML = withCode.map(h =>
     `<details class="cheat"><summary>${h.name}</summary><pre>${escapeHtml(h.code)}</pre></details>`).join("");
 
   $("#refLinks").querySelectorAll(".doc-jump").forEach(a => {
@@ -754,13 +755,13 @@ function renderCookbookList(filter = "") {
       head.className = "chapter";
       const done = cookbookList.filter(x => x.chapter === r.chapter && x.done).length;
       const total = cookbookList.filter(x => x.chapter === r.chapter).length;
-      head.innerHTML = `<span class="ch-icon">📖</span><span class="ch-name">${r.chapterName}</span>` +
+      head.innerHTML = `<span class="ch-icon">📖</span><span class="ch-name">${escapeHtml(r.chapterName)}</span>` +
         `<span class="ch-prog">${done}/${total}</span>`;
       ul.appendChild(head);
     }
     const li = document.createElement("li");
     li.className = current && current.file === "cookbook_" + r.id + ".zig" ? "active" : "";
-    li.innerHTML = `<span class="ex-title">${r.title}</span>${r.done ? ' <span class="ex-mark">✅</span>' : ""}`;
+    li.innerHTML = `<span class="ex-title">${escapeHtml(r.title)}</span>${r.done ? ' <span class="ex-mark">✅</span>' : ""}`;
     li.onclick = () => selectRecipe(r.id);
     ul.appendChild(li);
   }
@@ -828,7 +829,7 @@ function renderZbeList(filter = "") {
     if (f && !(p.title.toLowerCase().includes(f) || p.slug.includes(f))) continue;
     const li = document.createElement("li");
     li.className = current && current.file === "zbe_" + p.slug + ".zig" ? "active" : "";
-    li.innerHTML = `<span class="ex-title">${p.title}</span>${zbeProgress[p.slug] ? ' <span class="ex-mark">✅</span>' : ""}`;
+    li.innerHTML = `<span class="ex-title">${escapeHtml(p.title)}</span>${zbeProgress[p.slug] ? ' <span class="ex-mark">✅</span>' : ""}`;
     li.onclick = () => selectZbePage(p.slug);
     ul.appendChild(li);
   }
@@ -871,7 +872,7 @@ function loadZbeSnippet() {
   saveDraft();
 }
 function loadChatForZbe(slug) {
-  chatHistory = (JSON.parse(localStorage.getItem("chats") || "{}"))["zbe_" + slug] || [];
+  chatHistory = (JSON.parse(localStorage.getItem("chats") || "{}"))["zbe_" + slug + ".zig"] || [];
   chatLog.innerHTML = "";
   addMsg("assistant", "📘 Zig by Example 助手：这一页讲「" + current.title + "」。可以问语法、std API 用法或报错含义。");
   for (const m of chatHistory) addMsg(m.role, m.content);
@@ -939,12 +940,15 @@ function enterChallengeMode() {
     (current.note ? `${ESC}${ESC}📝 ${t("challengeNote")}：${current.note}` : "") +
     `${ESC}${ESC}${t("challengeHintTip")}`);
 }
-function enterPlaygroundMode() {
+async function enterPlaygroundMode() {
   if (!current) return;
   recipeMode = "playground";
-  // 恢复该配方的 Playground 草稿（没有则用参考实现）
-  const draft = localStorage.getItem("pg:playground_" + current.id + ".zig");
-  const code = draft || current.original || "";
+  // 恢复该配方的 Playground 草稿（服务端 work/runs/playground_*.zig；没有则用参考实现）
+  let code = current.original || "";
+  try {
+    const draft = await (await fetch("/api/exercise/playground_" + current.id + ".zig")).json();
+    if (draft.code && draft.code.trim()) code = draft.code;
+  } catch {}
   editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: code } });
   syncModeButtons();
   $("#outputCard").classList.add("hidden");
@@ -1083,7 +1087,7 @@ function renderCookbookStdLinks() {
   });
 }
 function loadChatForCookbook(id) {
-  chatHistory = (JSON.parse(localStorage.getItem("chats") || "{}"))["cookbook_" + id] || [];
+  chatHistory = (JSON.parse(localStorage.getItem("chats") || "{}"))["cookbook_" + id + ".zig"] || [];
   chatLog.innerHTML = "";
   addMsg("assistant", t("cookbookTutorPrefix") + "「" + current.title + "」。" + t("cookbookTutorSuffix"));
   for (const m of chatHistory) addMsg(m.role, m.content);

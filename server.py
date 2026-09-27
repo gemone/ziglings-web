@@ -131,7 +131,7 @@ def apply_zig_version(version):
     except Exception as e:
         print(f"[zig] re-extract failed: {e}")
     # 3) 更新 zls 配置指向该 zig（zls 版本需与 zig 一致才能完全工作）
-    zls_json = os.path.join(WORK, "zls.json")
+    zls_json = os.path.join(ROOT, "work", "zls.json")
     zcfg = load_json(zls_json, {})
     exe = zigs[version]
     zcfg["zig_exe_path"] = exe
@@ -196,7 +196,7 @@ def check_output(ex, p):
                     ln = ln[:14] + "#" * 10 + ln[24:]
                 out.append(ln)
             return "\n".join(out)
-        return mask(got) == mask(expected)
+        return (mask(got) == mask(expected)), got
     return got == expected, got
 
 
@@ -205,7 +205,8 @@ def run_exercise(ex, code):
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(code)
-        cmd = [zig_exe(), "run", path]
+        libc = ["-lc"] if ex.get("link_libc") else []
+        cmd = [zig_exe(), "run", *libc, path]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=RUN_TIMEOUT, env=ZIG_ENV, cwd=ROOT)
@@ -225,451 +226,6 @@ def run_exercise(ex, code):
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        pass
-
-    def _send(self, code, body, ctype="application/json"):
-        data = body.encode() if isinstance(body, str) else body
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
-
-    def _json_body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(n) or b"{}")
-
-    def do_GET(self):
-        if self.path.split("?")[0] == "/api/zbe":
-            lang = ""
-            try:
-                return self._send(200, json.dumps(zigbyexample.list_pages()))
-            except Exception as e:
-                return self._send(502, json.dumps({"error": f"拉取 zigbyexample 失败: {e}"}))
-        if self.path.startswith("/api/zbe/page/"):
-            slug = self.path.split("/page/")[1].split("?")[0]
-            try:
-                page = zigbyexample.get_page(slug)
-            except Exception as e:
-                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
-            code = self._user_code("zbe_" + slug + ".zig") or (page["snippets"][0]["zig"] if page["snippets"] else "")
-            return self._send(200, json.dumps({
-                "slug": slug, "title": page["title"], "prose": page["prose"],
-                "code": code, "original": page["snippets"][0]["zig"] if page["snippets"] else "",
-                "snippets": page["snippets"], "url": page["url"],
-                "uri": "file://" + os.path.join(WORK, "zbe_" + slug + ".zig"),
-                "rootUri": "file://" + WORK, "scratch": True,
-            }))
-        if self.path == "/api/zbe/progress":
-            return self._send(200, json.dumps(load_json(os.path.join(ROOT, "work", "zbe_progress.json"), {})))
-        if self.path.startswith("/api/runbg/status/"):
-            rid = self.path.rsplit("/", 1)[1]
-            ent = BGRUNS.get(rid)
-            if not ent:
-                return self._send(404, json.dumps({"error": "no such run"}))
-            with ent["lock"]:
-                output = "".join(ent["out"])
-            return self._send(200, json.dumps({
-                "running": not ent["done"], "returncode": ent["rc"], "output": output,
-                "file": ent["file"],
-            }))
-        if self.path.startswith("/api/runbg/stop/"):
-            rid = self.path.rsplit("/", 1)[1]
-            ent = BGRUNS.get(rid)
-            if ent and ent["p"] and ent["p"].poll() is None:
-                ent["p"].kill()
-            return self._send(200, json.dumps({"ok": True}))
-        if self.path.startswith("/p/ziglang.org/"):
-            return self._proxy_subtree()
-        if self.path.startswith("/proxy?url="):
-            return self._proxy()
-        if self.path == "/lsp" and self.headers.get("Upgrade", "").lower() == "websocket":
-            bridge = LspBridge(self)
-            bridge.handshake()
-            bridge.start()
-            self.close_connection = True
-            return
-        if self.path == "/api/exercises":
-            progress = load_json(PROGRESS, {})
-            out = []
-            for e in EXERCISES:
-                code = self._user_code(e["file"])
-                out.append({**e, "done": bool(progress.get(e["file"])),
-                            "hasCode": code is not None})
-            return self._send(200, json.dumps(out))
-        if self.path.startswith("/api/exercise/"):
-            f = os.path.basename(self.path)
-            if f == SCRATCH_FILE:
-                code = self._user_code(f) or SCRATCH_TEMPLATE
-                return self._send(200, json.dumps({
-                    "file": f, "code": code, "original": SCRATCH_TEMPLATE,
-                    "uri": "file://" + os.path.join(WORK, f),
-                    "rootUri": "file://" + WORK, "scratch": True,
-                }))
-            code = self._user_code(f) or self._orig_code(f)
-            if code is None:
-                return self._send(404, json.dumps({"error": "not found"}))
-            return self._send(200, json.dumps({
-                "file": f, "code": code, "original": self._orig_code(f),
-                "uri": "file://" + os.path.join(WORK, f),
-                "rootUri": "file://" + WORK,
-            }))
-        if self.path.split("?")[0] == "/api/cookbook":
-            from urllib.parse import urlparse, parse_qs
-            lang = "en-US" if "en" in (parse_qs(urlparse(self.path).query).get("lang") or ["zh"]) else "zh-CN"
-            try:
-                return self._send(200, json.dumps(cookbook.list_recipes(lang)))
-            except Exception as e:
-                return self._send(502, json.dumps({"error": f"拉取 cookbook 失败: {e}"}))
-        if self.path.startswith("/api/cookbook/recipe/"):
-            from urllib.parse import urlparse, parse_qs
-            rid = self.path.split("/recipe/")[1].split("?")[0]
-            q = parse_qs(urlparse(self.path).query)
-            lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
-            try:
-                r = cookbook.get_recipe(rid, lang)
-            except Exception as e:
-                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
-            code = self._user_code("cookbook_" + rid + ".zig") or r["code"]
-            return self._send(200, json.dumps({
-                "id": rid, "title": r["title"], "prose": r["prose"],
-                "code": code, "original": r["code"],
-                "uri": "file://" + os.path.join(WORK, "cookbook_" + rid + ".zig"),
-                "rootUri": "file://" + WORK, "scratch": True,
-            }))
-        if self.path.startswith("/api/cookbook/challenge/"):
-            from urllib.parse import urlparse, parse_qs
-            rid = self.path.split("/challenge/")[1].split("?")[0]
-            q = parse_qs(urlparse(self.path).query)
-            lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
-            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
-                return self._send(400, json.dumps({"error": "bad id"}))
-            has_override = rid in OVERRIDES and OVERRIDES[rid].get("code")
-            challengeable = has_override or rid[:2] in CHALLENGEABLE_CHAPTERS
-            expected = None
-            note = None
-            hints = None
-            try:
-                r = cookbook.get_recipe(rid, lang)
-                ref_code = cookbook_code_for(rid, r["code"])
-                if has_override:
-                    note = OVERRIDES[rid].get("note")
-                if challengeable:
-                    expected = _cookbook_expected(rid, ref_code)
-                    hints = cookbook_hints(ref_code)
-            except Exception as e:
-                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
-            if expected is None or not expected.strip():
-                # 参考实现跑不通（依赖缺失）或无可见输出（断言式测试）→ 不适合判题
-                challengeable = False
-            return self._send(200, json.dumps({
-                "challengeable": challengeable,
-                "expected": expected,
-                "skeleton": CHALLENGE_SKELETON,
-                "note": note,
-                "hints": hints,
-            }))
-        if self.path == "/api/cookbook/progress":
-            progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
-            return self._send(200, json.dumps(progress))
-        if self.path == "/api/env":
-            return self._send(200, json.dumps({
-                "zigs": list_zigs(),
-                "selected": selected_zig_version(),
-                "current": zig_exe(),
-            }))
-        if self.path == "/api/config":
-            cfg = load_json(AI_CONFIG, {})
-            cfg = {**cfg, "apiKeySet": bool(cfg.get("apiKey"))}
-            cfg.pop("apiKey", None)
-            return self._send(200, json.dumps(cfg))
-        return self._static()
-
-    def _orig_code(self, f):
-        p = os.path.join(ROOT, "ziglings", "exercises", f)
-        if os.path.isfile(p):
-            return open(p, encoding="utf-8").read()
-        return None
-
-    def _user_code(self, f):
-        p = os.path.join(WORK, f)
-        if os.path.isfile(p):
-            return open(p, encoding="utf-8").read()
-        return None
-
-    def _static(self):
-        path = self.path.split("?")[0]
-        if path == "/":
-            path = "/index.html"
-        fp = os.path.normpath(os.path.join(WEB, path.lstrip("/")))
-        if not fp.startswith(WEB) or not os.path.isfile(fp):
-            return self._send(404, "not found", "text/plain")
-        ctype = {"html": "text/html", "js": "text/javascript",
-                 "css": "text/css", "json": "application/json",
-                 "svg": "image/svg+xml", "png": "image/png"}.get(
-                     fp.rsplit(".", 1)[-1], "application/octet-stream")
-        with open(fp, "rb") as fh:
-            return self._send(200, fh.read(), ctype)
-
-    def do_POST(self):
-        global EXERCISES, BY_FILE
-        if self.path == "/api/run":
-            b = self._json_body()
-            f = b.get("file") or ""
-            if f == SCRATCH_FILE:
-                return self._send(200, json.dumps(run_scratch(b.get("code") or "")))
-            ex = BY_FILE.get(f)
-            if not ex:
-                return self._send(400, json.dumps({"error": "unknown exercise"}))
-            res = run_exercise(ex, b.get("code") or "")
-            return self._send(200, json.dumps(res))
-        if self.path.startswith("/api/solution/"):
-            f = os.path.basename(self.path)
-            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith(("cookbook_", "playground_")):
-                return self._send(400, json.dumps({"error": "unknown exercise"}))
-            b = self._json_body()
-            with open(os.path.join(WORK, f), "w", encoding="utf-8") as fh:
-                fh.write(b.get("code") or "")
-            return self._send(200, json.dumps({"saved": True}))
-        if self.path == "/api/config":
-            b = self._json_body()
-            cfg = load_json(AI_CONFIG, {})
-            for k in ("baseUrl", "model"):
-                if k in b:
-                    cfg[k] = b[k].rstrip("/")
-            if b.get("apiKey"):
-                cfg["apiKey"] = b["apiKey"]
-            save_json(AI_CONFIG, cfg)
-            return self._send(200, json.dumps({"saved": True}))
-        if self.path == "/api/submit":
-            b = self._json_body()
-            ex = BY_FILE.get(b.get("file") or "")
-            if not ex:
-                return self._send(400, json.dumps({"error": "unknown exercise"}))
-            res = run_exercise(ex, b.get("code") or "")
-            entry = {"file": ex["file"], "time": int(time.time()),
-                     "passed": res["passed"], "code": b.get("code") or ""}
-            subs = load_json(SUBMISSIONS, [])
-            subs.append(entry)
-            save_json(SUBMISSIONS, subs)
-            if res["passed"]:
-                progress = load_json(PROGRESS, {})
-                progress[ex["file"]] = True
-                save_json(PROGRESS, progress)
-            return self._send(200, json.dumps({**res, "submission": True,
-                "attempts": sum(1 for s in subs if s["file"] == ex["file"])}))
-        if self.path == "/api/lint":
-            b = self._json_body()
-            f = b.get("file") or ""
-            if f not in BY_FILE:
-                return self._send(400, json.dumps({"error": "unknown exercise"}))
-            return self._send(200, json.dumps({"diagnostics": zig_lint(f, b.get("code") or "")}))
-        if self.path == "/api/env/select":
-            b = self._json_body()
-            ok, info = apply_zig_version(b.get("version") or "")
-            # 元数据变了，重新加载题库
-            EXERCISES = load_json(DATA, [])
-            BY_FILE = {e["file"]: e for e in EXERCISES}
-            return self._send(200, json.dumps({"ok": ok, "ziglings": info} if ok
-                                              else {"error": info}))
-        if self.path == "/api/zbe/done":
-            b = self._json_body()
-            slug = b.get("slug") or ""
-            progress = load_json(os.path.join(ROOT, "work", "zbe_progress.json"), {})
-            if b.get("done"):
-                progress[slug] = True
-            else:
-                progress.pop(slug, None)
-            save_json(os.path.join(ROOT, "work", "zbe_progress.json"), progress)
-            return self._send(200, json.dumps({"ok": True}))
-        if self.path.startswith("/api/runbg/stop/"):
-            rid = self.path.rsplit("/", 1)[1]
-            ent = BGRUNS.get(rid)
-            if ent and ent["p"] and ent["p"].poll() is None:
-                ent["p"].kill()
-            return self._send(200, json.dumps({"ok": True}))
-        if self.path == "/api/cookbook/run":
-            b = self._json_body()
-            rid = b.get("id") or "unknown"
-            fname = os.path.basename(b.get("file") or f"cookbook_{rid}.zig")
-            if not re.fullmatch(r"[A-Za-z0-9_-]+\.zig", fname):
-                return self._send(400, json.dumps({"error": "bad file"}))
-            _cookbook_ensure_fixtures(b.get("code") or "")
-            res = run_scratch(b.get("code") or "", filename=fname,
-                              cwd=WORK, timeout=150,  # 首次编译新 std 模块较慢
-                              args=b.get("args"))
-            res["cookbook"] = True
-            return self._send(200, json.dumps(res))
-        if self.path == "/api/cookbook/judge":
-            b = self._json_body()
-            rid = b.get("id") or ""
-            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
-                return self._send(400, json.dumps({"error": "bad id"}))
-            try:
-                r = cookbook.get_recipe(rid, b.get("lang") or "zh-CN")
-            except Exception as e:
-                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
-            ref_code = cookbook_code_for(rid, r["code"])
-            expected = _cookbook_expected(rid, ref_code)
-            if expected is None:
-                return self._send(200, json.dumps({"passed": False,
-                    "stderr": "该配方无法自动判题（参考实现运行失败）", "stdout": ""}))
-            _cookbook_ensure_fixtures(b.get("code") or "")
-            p = _cookbook_run_code(b.get("code") or "", timeout=90)
-            seen = (p.stdout + p.stderr).strip()
-            passed = p.returncode == 0 and normalize(seen) == normalize(expected)
-            return self._send(200, json.dumps({
-                "passed": passed, "returncode": p.returncode,
-                "stdout": p.stdout, "stderr": p.stderr,
-                "outputSeen": seen, "expected": expected, "judged": True,
-                "hints": cookbook_hints(ref_code),
-            }))
-        if self.path == "/api/cookbook/done":
-            b = self._json_body()
-            rid = b.get("id") or ""
-            progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
-            if b.get("done"):
-                progress[rid] = True
-            else:
-                progress.pop(rid, None)
-            save_json(os.path.join(ROOT, "work", "cookbook_progress.json"), progress)
-            return self._send(200, json.dumps({"ok": True}))
-        if self.path == "/api/runbg/start":
-            b = self._json_body()
-            fname = os.path.basename(b.get("file") or "scratch.zig")
-            if not re.fullmatch(r"[A-Za-z0-9_-]+\.zig", fname):
-                return self._send(400, json.dumps({"error": "bad file"}))
-            args = b.get("args") or []
-            for a in args:
-                if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
-                    return self._send(400, json.dumps({"error": "非法参数"}))
-            mode = b.get("mode") if b.get("mode") in ("run", "test") else "run"
-            rid = start_bg_run(b.get("code") or "", fname, args, WORK, mode)
-            return self._send(200, json.dumps({"runId": rid}))
-        if self.path == "/api/translate":
-            b = self._json_body()
-            texts = b.get("texts") or []
-            target = b.get("target") or ("en" if (load_json(AI_CONFIG, {}).get("lang") == "en") else "zh")
-            if not texts:
-                return self._send(200, json.dumps({"translations": []}))
-            return self._send(200, json.dumps(self._translate(texts, target)))
-        if self.path == "/api/chat":
-            return self._chat()
-        return self._send(404, json.dumps({"error": "not found"}))
-
-
-
-    def _proxy_subtree(self):
-        """路径式同源代理：/p/ziglang.org/<path> -> https://ziglang.org/<path>
-        相对路径的子资源(wasm/js/tar)会自动落回本代理，无需改写。"""
-        import urllib.parse
-        parsed = urllib.parse.urlparse(self.path)
-        rest = parsed.path[len("/p/ziglang.org/"):]
-        url = "https://ziglang.org/" + rest
-        if parsed.query:
-            url += "?" + parsed.query
-        print("[proxy]", url, file=sys.stderr, flush=True)
-        req_headers = {"User-Agent": "Mozilla/5.0"}
-        body = ctype = None
-        last_err = None
-        for attempt in range(3):  # 网络抖动重试
-            req = urllib.request.Request(url, headers=req_headers)
-            try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    ctype = r.headers.get("Content-Type", "application/octet-stream")
-                    body = r.read()
-                break
-            except Exception as e:
-                last_err = e
-                time.sleep(0.5 * (attempt + 1))
-        if body is None:
-            return self._send(502, f"fetch failed after retries: {last_err}", "text/plain")
-        if "text/html" in ctype:
-            html = body.decode("utf-8", "replace")
-            # base 指向本代理的对应目录：根相对路径(/x)也走代理
-            i = rest.rfind("/")
-            dir_part = rest[:i + 1]
-            base_tag = f'<base href="/p/ziglang.org/{dir_part}">'
-            if "<head" in html:
-                html = re.sub(r"(<head[^>]*>)", r"\1" + base_tag, html, count=1)
-            else:
-                html = base_tag + html
-            body = html.encode("utf-8")
-            ctype = "text/html; charset=utf-8"
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "public, max-age=3600")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-# ---------- 后台运行任务（支持同时跑服务器+客户端） ----------
-BGRUNS = {}   # runId -> {"p":Popen,"out":[],"lock":Lock,"done":bool,"rc":None,"file":str,"thread":...}
-BG_LOCK = threading.Lock()
-BG_HARD_LIMIT = 600  # 后台任务最长 10 分钟
-
-
-def _bg_worker(run_id, code, filename, args, cwd, mode="run"):
-    ent = BGRUNS[run_id]
-    path = os.path.join(WORK, filename)
-    with _lock:
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(code)
-    cmd = [zig_exe(), "test" if mode == "test" else "run", path]
-    if args:
-        cmd += ["--"] + args
-    try:
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, env=ZIG_ENV, cwd=cwd)
-    except Exception as e:
-        ent["err"].append(str(e))
-        ent["done"] = True
-        ent["rc"] = -1
-        return
-    ent["p"] = p
-    started = time.time()
-
-    def pump(pipe, sink):
-        for line in iter(pipe.readline, ""):
-            with ent["lock"]:
-                sink.append(line)
-                # 限制缓冲 200KB
-                if sum(len(x) for x in ent["out"]) > 200_000:
-                    del ent["out"][0]
-        pipe.close()
-
-    t1 = threading.Thread(target=pump, args=(p.stdout, ent["out"]), daemon=True)
-    t2 = threading.Thread(target=pump, args=(p.stderr, ent["out"]), daemon=True)
-    t1.start(); t2.start()
-    while p.poll() is None and time.time() - started < BG_HARD_LIMIT:
-        time.sleep(0.2)
-    if p.poll() is None:
-        p.kill()
-    ent["rc"] = p.wait()
-    t1.join(timeout=2); t2.join(timeout=2)
-    ent["done"] = True
-
-
-def start_bg_run(code, filename, args=None, cwd=None, mode="run"):
-    rid = f"r{int(time.time()*1000)}"
-    args = [a for a in (args or [])][:8]
-    ent = {"p": None, "out": [], "err": [], "done": False, "rc": None,
-           "file": filename, "lock": threading.Lock()}
-    with BG_LOCK:
-        # 清理已完成超过 10 分钟的旧任务
-        BGRUNS[rid] = ent
-        if len(BGRUNS) > 12:
-            for k in list(BGRUNS)[:-12]:
-                if BGRUNS[k].get("done"):
-                    BGRUNS.pop(k, None)
-    t = threading.Thread(target=_bg_worker, args=(rid, code, filename, args, cwd or WORK, mode), daemon=True)
-    ent["thread"] = t
-    t.start()
-    return rid
-
     ALLOWED_DOC_HOSTS = ("ziglang.org", "www.ziglang.org")
 
     def _proxy(self):
@@ -885,6 +441,8 @@ def _cookbook_run_code(code, timeout=None):
 def _cookbook_ensure_fixtures(code):
     for m in re.finditer(r'"((?:tests|inputs|data|files)/[^"\n]+)"', code):
         rel = m.group(1)
+        if ".." in rel or rel.startswith("/"):
+            continue
         dst = os.path.join(WORK, rel)
         if not os.path.exists(dst):
             try:
@@ -938,6 +496,459 @@ def cookbook_hints(code):
         if len(syms) >= 6:
             break
     return {"signatures": sig_hints, "stdSymbols": syms}
+
+    def log_message(self, fmt, *args):
+        pass
+
+    def _send(self, code, body, ctype="application/json"):
+        data = body.encode() if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _json_body(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            return json.loads(self.rfile.read(n) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            return {}
+
+    def do_GET(self):
+        if self.path.split("?")[0] == "/api/zbe":
+            lang = ""
+            try:
+                return self._send(200, json.dumps(zigbyexample.list_pages()))
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取 zigbyexample 失败: {e}"}))
+        if self.path.startswith("/api/zbe/page/"):
+            slug = self.path.split("/page/")[1].split("?")[0]
+            try:
+                page = zigbyexample.get_page(slug)
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            code = self._user_code("zbe_" + slug + ".zig") or (page["snippets"][0]["zig"] if page["snippets"] else "")
+            return self._send(200, json.dumps({
+                "slug": slug, "title": page["title"], "prose": page["prose"],
+                "code": code, "original": page["snippets"][0]["zig"] if page["snippets"] else "",
+                "snippets": page["snippets"], "url": page["url"],
+                "uri": "file://" + os.path.join(WORK, "zbe_" + slug + ".zig"),
+                "rootUri": "file://" + WORK, "scratch": True,
+            }))
+        if self.path == "/api/zbe/progress":
+            return self._send(200, json.dumps(load_json(os.path.join(ROOT, "work", "zbe_progress.json"), {})))
+        if self.path.startswith("/api/runbg/status/"):
+            rid = self.path.rsplit("/", 1)[1]
+            ent = BGRUNS.get(rid)
+            if not ent:
+                return self._send(404, json.dumps({"error": "no such run"}))
+            with ent["lock"]:
+                output = "".join(ent["out"])
+            return self._send(200, json.dumps({
+                "running": not ent["done"], "returncode": ent["rc"], "output": output,
+                "file": ent["file"],
+            }))
+        if self.path.startswith("/api/runbg/stop/"):
+            rid = self.path.rsplit("/", 1)[1]
+            ent = BGRUNS.get(rid)
+            if ent and ent["p"] and ent["p"].poll() is None:
+                ent["p"].kill()
+            return self._send(200, json.dumps({"ok": True}))
+        if self.path.startswith("/p/ziglang.org/"):
+            return self._proxy_subtree()
+        if self.path.startswith("/proxy?url="):
+            return self._proxy()
+        if self.path == "/lsp" and self.headers.get("Upgrade", "").lower() == "websocket":
+            bridge = LspBridge(self)
+            bridge.handshake()
+            bridge.start()
+            self.close_connection = True
+            return
+        if self.path == "/api/exercises":
+            progress = load_json(PROGRESS, {})
+            out = []
+            for e in EXERCISES:
+                code = self._user_code(e["file"])
+                out.append({**e, "done": bool(progress.get(e["file"])),
+                            "hasCode": code is not None})
+            return self._send(200, json.dumps(out))
+        if self.path.startswith("/api/exercise/"):
+            f = os.path.basename(self.path)
+            if f == SCRATCH_FILE:
+                code = self._user_code(f) or SCRATCH_TEMPLATE
+                return self._send(200, json.dumps({
+                    "file": f, "code": code, "original": SCRATCH_TEMPLATE,
+                    "uri": "file://" + os.path.join(WORK, f),
+                    "rootUri": "file://" + WORK, "scratch": True,
+                }))
+            code = self._user_code(f) or self._orig_code(f)
+            if code is None:
+                return self._send(404, json.dumps({"error": "not found"}))
+            return self._send(200, json.dumps({
+                "file": f, "code": code, "original": self._orig_code(f),
+                "uri": "file://" + os.path.join(WORK, f),
+                "rootUri": "file://" + WORK,
+            }))
+        if self.path.split("?")[0] == "/api/cookbook":
+            from urllib.parse import urlparse, parse_qs
+            lang = "en-US" if "en" in (parse_qs(urlparse(self.path).query).get("lang") or ["zh"]) else "zh-CN"
+            try:
+                return self._send(200, json.dumps(cookbook.list_recipes(lang)))
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取 cookbook 失败: {e}"}))
+        if self.path.startswith("/api/cookbook/recipe/"):
+            from urllib.parse import urlparse, parse_qs
+            rid = self.path.split("/recipe/")[1].split("?")[0]
+            q = parse_qs(urlparse(self.path).query)
+            lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
+            try:
+                r = cookbook.get_recipe(rid, lang)
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            code = self._user_code("cookbook_" + rid + ".zig") or r["code"]
+            return self._send(200, json.dumps({
+                "id": rid, "title": r["title"], "prose": r["prose"],
+                "code": code, "original": r["code"],
+                "uri": "file://" + os.path.join(WORK, "cookbook_" + rid + ".zig"),
+                "rootUri": "file://" + WORK, "scratch": True,
+            }))
+        if self.path.startswith("/api/cookbook/challenge/"):
+            from urllib.parse import urlparse, parse_qs
+            rid = self.path.split("/challenge/")[1].split("?")[0]
+            q = parse_qs(urlparse(self.path).query)
+            lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
+            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+                return self._send(400, json.dumps({"error": "bad id"}))
+            has_override = rid in OVERRIDES and OVERRIDES[rid].get("code")
+            challengeable = has_override or rid[:2] in CHALLENGEABLE_CHAPTERS
+            expected = None
+            note = None
+            hints = None
+            try:
+                r = cookbook.get_recipe(rid, lang)
+                ref_code = cookbook_code_for(rid, r["code"])
+                if has_override:
+                    note = OVERRIDES[rid].get("note")
+                if challengeable:
+                    expected = _cookbook_expected(rid, ref_code)
+                    hints = cookbook_hints(ref_code)
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            if expected is None or not expected.strip():
+                # 参考实现跑不通（依赖缺失）或无可见输出（断言式测试）→ 不适合判题
+                challengeable = False
+            return self._send(200, json.dumps({
+                "challengeable": challengeable,
+                "expected": expected,
+                "skeleton": CHALLENGE_SKELETON,
+                "note": note,
+                "hints": hints,
+            }))
+        if self.path == "/api/cookbook/progress":
+            progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
+            return self._send(200, json.dumps(progress))
+        if self.path == "/api/env":
+            return self._send(200, json.dumps({
+                "zigs": list_zigs(),
+                "selected": selected_zig_version(),
+                "current": zig_exe(),
+            }))
+        if self.path == "/api/config":
+            cfg = load_json(AI_CONFIG, {})
+            cfg = {**cfg, "apiKeySet": bool(cfg.get("apiKey"))}
+            cfg.pop("apiKey", None)
+            return self._send(200, json.dumps(cfg))
+        return self._static()
+
+    def _orig_code(self, f):
+        p = os.path.join(ROOT, "ziglings", "exercises", f)
+        if os.path.isfile(p):
+            return open(p, encoding="utf-8").read()
+        return None
+
+    def _user_code(self, f):
+        p = os.path.join(WORK, f)
+        if os.path.isfile(p):
+            return open(p, encoding="utf-8").read()
+        return None
+
+    def _static(self):
+        path = self.path.split("?")[0]
+        if path == "/":
+            path = "/index.html"
+        fp = os.path.normpath(os.path.join(WEB, path.lstrip("/")))
+        if not fp.startswith(WEB) or not os.path.isfile(fp):
+            return self._send(404, "not found", "text/plain")
+        ctype = {"html": "text/html", "js": "text/javascript",
+                 "css": "text/css", "json": "application/json",
+                 "svg": "image/svg+xml", "png": "image/png"}.get(
+                     fp.rsplit(".", 1)[-1], "application/octet-stream")
+        with open(fp, "rb") as fh:
+            return self._send(200, fh.read(), ctype)
+
+    def do_POST(self):
+        global EXERCISES, BY_FILE
+        if self.path == "/api/run":
+            b = self._json_body()
+            f = b.get("file") or ""
+            if f == SCRATCH_FILE:
+                return self._send(200, json.dumps(run_scratch(b.get("code") or "")))
+            ex = BY_FILE.get(f)
+            if not ex:
+                return self._send(400, json.dumps({"error": "unknown exercise"}))
+            res = run_exercise(ex, b.get("code") or "")
+            return self._send(200, json.dumps(res))
+        if self.path.startswith("/api/solution/"):
+            f = os.path.basename(self.path)
+            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith(("cookbook_", "playground_")):
+                return self._send(400, json.dumps({"error": "unknown exercise"}))
+            b = self._json_body()
+            with open(os.path.join(WORK, f), "w", encoding="utf-8") as fh:
+                fh.write(b.get("code") or "")
+            return self._send(200, json.dumps({"saved": True}))
+        if self.path == "/api/config":
+            b = self._json_body()
+            cfg = load_json(AI_CONFIG, {})
+            for k in ("baseUrl", "model"):
+                if k in b:
+                    cfg[k] = b[k].rstrip("/")
+            if b.get("apiKey"):
+                cfg["apiKey"] = b["apiKey"]
+            save_json(AI_CONFIG, cfg)
+            return self._send(200, json.dumps({"saved": True}))
+        if self.path == "/api/submit":
+            b = self._json_body()
+            ex = BY_FILE.get(b.get("file") or "")
+            if not ex:
+                return self._send(400, json.dumps({"error": "unknown exercise"}))
+            res = run_exercise(ex, b.get("code") or "")
+            entry = {"file": ex["file"], "time": int(time.time()),
+                     "passed": res["passed"], "code": b.get("code") or ""}
+            subs = load_json(SUBMISSIONS, [])
+            subs.append(entry)
+            save_json(SUBMISSIONS, subs)
+            if res["passed"]:
+                with _lock:
+                    progress = load_json(PROGRESS, {})
+                    progress[ex["file"]] = True
+                    save_json(PROGRESS, progress)
+            return self._send(200, json.dumps({**res, "submission": True,
+                "attempts": sum(1 for s in subs if s["file"] == ex["file"])}))
+        if self.path == "/api/lint":
+            b = self._json_body()
+            f = b.get("file") or ""
+            if f not in BY_FILE:
+                return self._send(400, json.dumps({"error": "unknown exercise"}))
+            return self._send(200, json.dumps({"diagnostics": zig_lint(f, b.get("code") or "")}))
+        if self.path == "/api/env/select":
+            b = self._json_body()
+            ok, info = apply_zig_version(b.get("version") or "")
+            # 元数据变了，重新加载题库
+            with _lock:
+                EXERCISES = load_json(DATA, [])
+                BY_FILE = {e["file"]: e for e in EXERCISES}
+            return self._send(200, json.dumps({"ok": ok, "ziglings": info} if ok
+                                              else {"error": info}))
+        if self.path == "/api/zbe/done":
+            b = self._json_body()
+            slug = b.get("slug") or ""
+            with _lock:
+                progress = load_json(os.path.join(ROOT, "work", "zbe_progress.json"), {})
+                if b.get("done"):
+                    progress[slug] = True
+                else:
+                    progress.pop(slug, None)
+                save_json(os.path.join(ROOT, "work", "zbe_progress.json"), progress)
+            return self._send(200, json.dumps({"ok": True}))
+        if self.path.startswith("/api/runbg/stop/"):
+            rid = self.path.rsplit("/", 1)[1]
+            ent = BGRUNS.get(rid)
+            if ent and ent["p"] and ent["p"].poll() is None:
+                ent["p"].kill()
+            return self._send(200, json.dumps({"ok": True}))
+        if self.path == "/api/cookbook/run":
+            b = self._json_body()
+            rid = b.get("id") or "unknown"
+            fname = os.path.basename(b.get("file") or f"cookbook_{rid}.zig")
+            if not re.fullmatch(r"[A-Za-z0-9_-]+\.zig", fname):
+                return self._send(400, json.dumps({"error": "bad file"}))
+            _cookbook_ensure_fixtures(b.get("code") or "")
+            res = run_scratch(b.get("code") or "", filename=fname,
+                              cwd=WORK, timeout=150,  # 首次编译新 std 模块较慢
+                              args=b.get("args"))
+            res["cookbook"] = True
+            return self._send(200, json.dumps(res))
+        if self.path == "/api/cookbook/judge":
+            b = self._json_body()
+            rid = b.get("id") or ""
+            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+                return self._send(400, json.dumps({"error": "bad id"}))
+            lang = b.get("lang") if b.get("lang") in ("zh-CN", "en-US") else "zh-CN"
+            try:
+                r = cookbook.get_recipe(rid, lang)
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            ref_code = cookbook_code_for(rid, r["code"])
+            expected = _cookbook_expected(rid, ref_code)
+            if expected is None:
+                return self._send(200, json.dumps({"passed": False,
+                    "stderr": "该配方无法自动判题（参考实现运行失败）", "stdout": ""}))
+            _cookbook_ensure_fixtures(b.get("code") or "")
+            p = _cookbook_run_code(b.get("code") or "", timeout=90)
+            seen = (p.stdout + p.stderr).strip()
+            passed = p.returncode == 0 and normalize(seen) == normalize(expected)
+            return self._send(200, json.dumps({
+                "passed": passed, "returncode": p.returncode,
+                "stdout": p.stdout, "stderr": p.stderr,
+                "outputSeen": seen, "expected": expected, "judged": True,
+                "hints": cookbook_hints(ref_code),
+            }))
+        if self.path == "/api/cookbook/done":
+            b = self._json_body()
+            rid = b.get("id") or ""
+            with _lock:
+                progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
+                if b.get("done"):
+                    progress[rid] = True
+                else:
+                    progress.pop(rid, None)
+                save_json(os.path.join(ROOT, "work", "cookbook_progress.json"), progress)
+            return self._send(200, json.dumps({"ok": True}))
+        if self.path == "/api/runbg/start":
+            b = self._json_body()
+            fname = os.path.basename(b.get("file") or "scratch.zig")
+            if not re.fullmatch(r"[A-Za-z0-9_-]+\.zig", fname):
+                return self._send(400, json.dumps({"error": "bad file"}))
+            args = b.get("args") or []
+            for a in args:
+                if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
+                    return self._send(400, json.dumps({"error": "非法参数"}))
+            mode = b.get("mode") if b.get("mode") in ("run", "test") else "run"
+            rid = start_bg_run(b.get("code") or "", fname, args, WORK, mode)
+            return self._send(200, json.dumps({"runId": rid}))
+        if self.path == "/api/translate":
+            b = self._json_body()
+            texts = b.get("texts") or []
+            target = b.get("target") or ("en" if (load_json(AI_CONFIG, {}).get("lang") == "en") else "zh")
+            if not texts:
+                return self._send(200, json.dumps({"translations": []}))
+            return self._send(200, json.dumps(self._translate(texts, target)))
+        if self.path == "/api/chat":
+            return self._chat()
+        return self._send(404, json.dumps({"error": "not found"}))
+
+
+
+    def _proxy_subtree(self):
+        """路径式同源代理：/p/ziglang.org/<path> -> https://ziglang.org/<path>
+        相对路径的子资源(wasm/js/tar)会自动落回本代理，无需改写。"""
+        import urllib.parse
+        parsed = urllib.parse.urlparse(self.path)
+        rest = parsed.path[len("/p/ziglang.org/"):]
+        url = "https://ziglang.org/" + rest
+        if parsed.query:
+            url += "?" + parsed.query
+        print("[proxy]", url, file=sys.stderr, flush=True)
+        req_headers = {"User-Agent": "Mozilla/5.0"}
+        body = ctype = None
+        last_err = None
+        for attempt in range(3):  # 网络抖动重试
+            req = urllib.request.Request(url, headers=req_headers)
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    ctype = r.headers.get("Content-Type", "application/octet-stream")
+                    body = r.read()
+                break
+            except Exception as e:
+                last_err = e
+                time.sleep(0.5 * (attempt + 1))
+        if body is None:
+            return self._send(502, f"fetch failed after retries: {last_err}", "text/plain")
+        if "text/html" in ctype:
+            html = body.decode("utf-8", "replace")
+            # base 指向本代理的对应目录：根相对路径(/x)也走代理
+            i = rest.rfind("/")
+            dir_part = rest[:i + 1]
+            base_tag = f'<base href="/p/ziglang.org/{dir_part}">'
+            if "<head" in html:
+                html = re.sub(r"(<head[^>]*>)", r"\1" + base_tag, html, count=1)
+            else:
+                html = base_tag + html
+            body = html.encode("utf-8")
+            ctype = "text/html; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+# ---------- 后台运行任务（支持同时跑服务器+客户端） ----------
+BGRUNS = {}   # runId -> {"p":Popen,"out":[],"lock":Lock,"done":bool,"rc":None,"file":str,"thread":...}
+BG_LOCK = threading.Lock()
+BG_HARD_LIMIT = 600  # 后台任务最长 10 分钟
+
+
+def _bg_worker(run_id, code, filename, args, cwd, mode="run"):
+    ent = BGRUNS[run_id]
+    path = os.path.join(WORK, filename)
+    with _lock:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(code)
+    cmd = [zig_exe(), "test" if mode == "test" else "run", path]
+    if args:
+        cmd += ["--"] + args
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, env=ZIG_ENV, cwd=cwd)
+    except Exception as e:
+        ent["err"].append(str(e))
+        ent["done"] = True
+        ent["rc"] = -1
+        return
+    ent["p"] = p
+    started = time.time()
+
+    def pump(pipe, sink):
+        for line in iter(pipe.readline, ""):
+            with ent["lock"]:
+                sink.append(line)
+                # 限制缓冲 200KB
+                if sum(len(x) for x in ent["out"]) > 200_000:
+                    del ent["out"][0]
+        pipe.close()
+
+    t1 = threading.Thread(target=pump, args=(p.stdout, ent["out"]), daemon=True)
+    t2 = threading.Thread(target=pump, args=(p.stderr, ent["out"]), daemon=True)
+    t1.start(); t2.start()
+    while p.poll() is None and time.time() - started < BG_HARD_LIMIT:
+        time.sleep(0.2)
+    if p.poll() is None:
+        p.kill()
+    ent["rc"] = p.wait()
+    t1.join(timeout=2); t2.join(timeout=2)
+    ent["done"] = True
+
+
+def start_bg_run(code, filename, args=None, cwd=None, mode="run"):
+    rid = f"r{int(time.time()*1000)}"
+    args = [a for a in (args or [])][:8]
+    ent = {"p": None, "out": [], "err": [], "done": False, "rc": None,
+           "file": filename, "lock": threading.Lock()}
+    with BG_LOCK:
+        # 清理已完成超过 10 分钟的旧任务
+        BGRUNS[rid] = ent
+        if len(BGRUNS) > 12:
+            for k in list(BGRUNS)[:-12]:
+                if BGRUNS[k].get("done"):
+                    BGRUNS.pop(k, None)
+    t = threading.Thread(target=_bg_worker, args=(rid, code, filename, args, cwd or WORK, mode), daemon=True)
+    ent["thread"] = t
+    t.start()
+    return rid
 
 
 def init_content():

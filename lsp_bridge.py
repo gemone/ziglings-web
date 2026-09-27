@@ -26,6 +26,7 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ZLS = os.environ.get("ZLS_EXE") or shutil.which("zls") or "zls"
 RUNS = os.path.join(ROOT, "work", "runs")
+ZLS_CONFIG = os.path.join(ROOT, "work", "zls.json")
 
 
 def _recv_exact(rfile, n):
@@ -91,7 +92,7 @@ class LspBridge:
     def start(self):
         env = {**os.environ}
         self.zls = subprocess.Popen(
-            [ZLS, "--config-path", os.path.join(RUNS, "zls.json")],
+            [ZLS, "--config-path", ZLS_CONFIG],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=RUNS, env=env)
