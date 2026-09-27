@@ -299,6 +299,29 @@ class Handler(BaseHTTPRequestHandler):
                 "uri": "file://" + os.path.join(WORK, "cookbook_" + rid + ".zig"),
                 "rootUri": "file://" + WORK, "scratch": True,
             }))
+        if self.path.startswith("/api/cookbook/challenge/"):
+            from urllib.parse import urlparse, parse_qs
+            rid = self.path.split("/challenge/")[1].split("?")[0]
+            q = parse_qs(urlparse(self.path).query)
+            lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
+            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+                return self._send(400, json.dumps({"error": "bad id"}))
+            challengeable = rid[:2] in CHALLENGEABLE_CHAPTERS
+            expected = None
+            if challengeable:
+                try:
+                    r = cookbook.get_recipe(rid, lang)
+                    expected = _cookbook_expected(rid, r["code"])
+                except Exception as e:
+                    return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+                if expected is None or not expected.strip():
+                    # 参考实现跑不通（依赖缺失）或无可见输出（断言式测试）→ 不适合判题
+                    challengeable = False
+            return self._send(200, json.dumps({
+                "challengeable": challengeable,
+                "expected": expected,
+                "skeleton": CHALLENGE_SKELETON,
+            }))
         if self.path == "/api/cookbook/progress":
             progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
             return self._send(200, json.dumps(progress))
@@ -355,7 +378,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(res))
         if self.path.startswith("/api/solution/"):
             f = os.path.basename(self.path)
-            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith("cookbook_"):
+            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith(("cookbook_", "playground_")):
                 return self._send(400, json.dumps({"error": "unknown exercise"}))
             b = self._json_body()
             with open(os.path.join(WORK, f), "w", encoding="utf-8") as fh:
@@ -405,24 +428,36 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/cookbook/run":
             b = self._json_body()
             rid = b.get("id") or "unknown"
-            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
-                return self._send(400, json.dumps({"error": "bad id"}))
-            # 配方夹具：从上游拉取配方需要的样本文件（如 tests/zig-zen.txt）
-            for m in re.finditer(r'"((?:tests|inputs|data|files)/[^"\n]+)"', b.get("code") or ""):
-                rel = m.group(1)
-                dst = os.path.join(WORK, rel)
-                if not os.path.exists(dst):
-                    try:
-                        content, _ = cookbook.fetch_cached(rel)
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        with open(dst, "w", encoding="utf-8") as fh:
-                            fh.write(content)
-                    except Exception:
-                        pass  # 拉取失败就让配方自己报错
-            res = run_scratch(b.get("code") or "", filename=f"cookbook_{rid}.zig",
+            fname = os.path.basename(b.get("file") or f"cookbook_{rid}.zig")
+            if not re.fullmatch(r"[A-Za-z0-9_-]+\.zig", fname):
+                return self._send(400, json.dumps({"error": "bad file"}))
+            _cookbook_ensure_fixtures(b.get("code") or "")
+            res = run_scratch(b.get("code") or "", filename=fname,
                               cwd=WORK)  # 配方相对路径(如 tests/xx.txt)以 work/runs 为根
             res["cookbook"] = True
             return self._send(200, json.dumps(res))
+        if self.path == "/api/cookbook/judge":
+            b = self._json_body()
+            rid = b.get("id") or ""
+            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+                return self._send(400, json.dumps({"error": "bad id"}))
+            try:
+                r = cookbook.get_recipe(rid, b.get("lang") or "zh-CN")
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            expected = _cookbook_expected(rid, r["code"])
+            if expected is None:
+                return self._send(200, json.dumps({"passed": False,
+                    "stderr": "该配方无法自动判题（参考实现运行失败）", "stdout": ""}))
+            _cookbook_ensure_fixtures(b.get("code") or "")
+            p = _cookbook_run_code(b.get("code") or "")
+            seen = (p.stdout + p.stderr).strip()
+            passed = p.returncode == 0 and normalize(seen) == normalize(expected)
+            return self._send(200, json.dumps({
+                "passed": passed, "returncode": p.returncode,
+                "stdout": p.stdout, "stderr": p.stderr,
+                "outputSeen": seen, "expected": expected, "judged": True,
+            }))
         if self.path == "/api/cookbook/done":
             b = self._json_body()
             rid = b.get("id") or ""
@@ -643,6 +678,70 @@ def run_scratch(code, filename=SCRATCH_FILE, cwd=None):
             "stdout": p.stdout, "stderr": p.stderr,
             "outputSeen": (p.stdout + p.stderr).strip(),
             "expected": "", "scratch": True}
+
+
+# ---------- cookbook 挑战模式（A 类确定性配方的模拟练习） ----------
+# 06-01(rand) 输出非确定性，已排除；空输出（断言式测试）的配方自动降级
+CHALLENGEABLE_CHAPTERS = {"01", "02", "09", "10", "11", "12", "13", "15"}
+CHALLENGE_SKELETON = """const std = @import("std");
+
+pub fn main() void {
+    // TODO: 阅读 Cookbook 讲解后，从零实现这个任务，
+    //       让程序输出与参考实现一致，然后提交挑战。
+}
+"""
+
+
+def _cookbook_expected_path(rid):
+    return os.path.join(ROOT, "work", "cache", "cookbook", f"expected_{rid}.txt")
+
+
+def _cookbook_run_code(code):
+    """运行 cookbook 代码（cwd=work/runs，自动准备夹具），返回结果。"""
+    path = os.path.join(WORK, "cookbook_tmp_run.zig")
+    with _lock:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(code)
+        try:
+            return subprocess.run([zig_exe(), "run", path], capture_output=True,
+                                  text=True, timeout=RUN_TIMEOUT, env=ZIG_ENV, cwd=WORK)
+        except subprocess.TimeoutExpired:
+            class _T:
+                returncode = -1
+                stdout = ""
+                stderr = f"Timed out after {RUN_TIMEOUT}s."
+            return _T()
+
+
+def _cookbook_ensure_fixtures(code):
+    for m in re.finditer(r'"((?:tests|inputs|data|files)/[^"\n]+)"', code):
+        rel = m.group(1)
+        dst = os.path.join(WORK, rel)
+        if not os.path.exists(dst):
+            try:
+                content, _ = cookbook.fetch_cached(rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            except Exception:
+                pass
+
+
+def _cookbook_expected(rid, ref_code):
+    """参考实现的期望输出（文件缓存；没有则现场运行参考代码捕获）。"""
+    ep = _cookbook_expected_path(rid)
+    if os.path.isfile(ep):
+        return open(ep, encoding="utf-8").read()
+    _cookbook_ensure_fixtures(ref_code)
+    p = _cookbook_run_code(ref_code)
+    if p.returncode != 0:
+        return None
+    # cookbook 配方惯用 std.debug.print（stderr），合并两路作为输出
+    expected = (p.stdout + p.stderr).strip()
+    os.makedirs(os.path.dirname(ep), exist_ok=True)
+    with open(ep, "w", encoding="utf-8") as fh:
+        fh.write(expected)
+    return expected
 
 
 def init_content():

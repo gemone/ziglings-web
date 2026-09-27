@@ -291,6 +291,7 @@ async function run() {
 
 async function submit() {
   if (!current) return;
+  if (current.id && current.file.startsWith("cookbook_")) { await submitChallenge(); return; }
   $("#runStatus").textContent = t("submitting"); $("#runStatus").className = "";
   const res = await (await fetch("/api/submit", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -595,7 +596,10 @@ $("#btnScratch").parentElement.insertBefore(btnCookbook, $("#btnScratch"));
 
 async function ensureCookbookList() {
   if (cookbookList) return cookbookList;
-  cookbookList = await (await fetch("/api/cookbook?lang=" + getLang())).json();
+  const [list, progress] = [await (await fetch("/api/cookbook?lang=" + getLang())).json(),
+                            await (await fetch("/api/cookbook/progress")).json()];
+  for (const r of list) r.done = !!progress[r.id];
+  cookbookList = list;
   return cookbookList;
 }
 function renderCookbookList() {
@@ -607,13 +611,15 @@ function renderCookbookList() {
       last = r.chapter;
       const head = document.createElement("li");
       head.className = "chapter";
+      const done = cookbookList.filter(x => x.chapter === r.chapter && x.done).length;
+      const total = cookbookList.filter(x => x.chapter === r.chapter).length;
       head.innerHTML = `<span class="ch-icon">📖</span><span class="ch-name">${r.chapterName}</span>` +
-        `<span class="ch-prog">${r.chapter}</span>`;
+        `<span class="ch-prog">${done}/${total}</span>`;
       ul.appendChild(head);
     }
     const li = document.createElement("li");
     li.className = current && current.file === "cookbook_" + r.id + ".zig" ? "active" : "";
-    li.innerHTML = `<span class="ex-title">${r.title}</span>`;
+    li.innerHTML = `<span class="ex-title">${r.title}</span>${r.done ? ' <span class="ex-mark">✅</span>' : ""}`;
     li.onclick = () => selectRecipe(r.id);
     ul.appendChild(li);
   }
@@ -640,11 +646,10 @@ async function selectRecipe(id) {
   cookbookMode = true;
   const res = await (await fetch(`/api/cookbook/recipe/${id}?lang=${getLang() === "en" ? "en-US" : "zh-CN"}`)).json();
   if (res.error) { addMsg("error", res.error); return; }
-  current = { file: "cookbook_" + id + ".zig", title: res.title, n: 0,
+  current = { file: "cookbook_" + id + ".zig", title: res.title, n: 0, id,
               output: "", hint: null, skip: false, scratch: true,
               original: res.original, uri: res.uri, rootUri: res.rootUri, prose: res.prose };
   mountEditor(res.code);
-  const lang = document.querySelector('#lesson');
   $("#lesson").innerHTML = renderMd(`### ${res.title}\n\n${res.prose}\n\n> Cookbook 示例：直接运行参考实现，修改后 Ctrl+Enter 立即看结果。`);
   $("#outputCard").classList.add("hidden");
   $("#runStatus").textContent = "";
@@ -652,10 +657,121 @@ async function selectRecipe(id) {
   $("#btnHint").style.display = "none";
   renderListSearchSafe();
   loadChatForCookbook(id);
+  renderCookbookStdLinks();
+  setupCookbookButtons(id);
   if (editor) editor.view.focus();
+}
+
+/* 挑战模式 / Playground 按钮（按可判题性动态生成） */
+let challengeActive = false;
+function setupCookbookButtons(id) {
+  $("#btnSubmit").style.display = "none";
+  $("#btnHint").style.display = "none";
+  let btn = $("#btnChallenge");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = "btnChallenge";
+    $("#runRow").insertBefore(btn, $("#btnExplain"));
+  }
+  btn.disabled = true;
+  btn.textContent = "⏳ " + t("checking");
+  btn.onclick = async () => { await startChallenge(id); };
+  (async () => {
+    try {
+      const info = await (await fetch(`/api/cookbook/challenge/${id}?lang=${getLang() === "en" ? "en-US" : "zh-CN"}`)).json();
+      if (info.challengeable) {
+        current.expected = info.expected;
+        current.skeleton = info.skeleton;
+        btn.textContent = "🎯 " + t("challengeMode");
+        btn.disabled = false;
+        btn.title = t("challengeTip");
+      } else {
+        btn.textContent = "🧪 " + t("playgroundOpen");
+        btn.disabled = false;
+        btn.title = t("playgroundTip");
+        btn.onclick = () => openPlayground(id);
+      }
+    } catch (e) {
+      btn.textContent = "🧪 " + t("playgroundOpen");
+      btn.disabled = false;
+      btn.onclick = () => openPlayground(id);
+    }
+  })();
+}
+
+async function startChallenge(id) {
+  challengeActive = true;
+  editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: current.skeleton || "" } });
+  $("#btnSubmit").style.display = "";
+  $("#btnSubmit").textContent = "📤 " + t("submitChallenge");
+  $("#btnSubmit").disabled = false;
+  $("#runStatus").textContent = t("challengeStarted");
+  $("#runStatus").className = "";
+  addMsg("assistant", t("challengeChatIntro"));
+}
+
+function openPlayground(id) {
+  challengeActive = false;
+  const file = "playground_" + id + ".zig";
+  current.file = file;
+  const saved = localStorage.getItem("pg:" + file);
+  if (saved) editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: saved } });
+  $("#runStatus").textContent = t("playgroundStarted");
+  $("#runStatus").className = "";
+  $("#btnSubmit").style.display = "none";
+  addMsg("assistant", t("playgroundChatIntro"));
+}
+
+async function submitChallenge() {
+  $("#runStatus").textContent = t("submitting"); $("#runStatus").className = "";
+  const res = await (await fetch("/api/cookbook/judge", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: current.id, code: code(), lang: getLang() === "en" ? "en-US" : "zh-CN" })
+  })).json();
+  lastResult = res;
+  $("#outputCard").classList.remove("hidden");
+  const out = $("#output");
+  if (res.passed) {
+    $("#runStatus").textContent = "🎯 " + t("challengePassed");
+    $("#runStatus").className = "ok";
+    out.innerHTML = `<span class="ok">${escapeHtml(res.outputSeen)}</span>\n\n<span class="ok">🎉 ${t("challengePassedMsg")}</span>`;
+    markCookbookDone(current.id, true);
+  } else {
+    $("#runStatus").textContent = t("outputMismatch");
+    $("#runStatus").className = "err";
+    out.innerHTML =
+      (res.stderr ? `<span class="err">${escapeHtml(res.stderr)}</span>\n` : "") +
+      `<span class="exp">${escapeHtml(t("expected"))}${escapeHtml(res.expected)}</span>\n` +
+      `<span>${escapeHtml(t("actual"))}${escapeHtml(res.outputSeen || "(空)")}</span>`;
+  }
+  out.scrollTop = 0;
 }
 function renderListSearchSafe() {
   if (cookbookMode) renderCookbookList(); else renderList($("#search").value);
+}
+
+const CHAPTER_STD = {
+  "01": "std.fs", "02": "std.crypto", "03": "std.time", "04": "std.net",
+  "05": "std.http", "06": "std.Random", "07": "std.Thread", "08": "std.process",
+  "09": "std.SemanticVersion", "10": "std.json", "11": "std.math.complex",
+  "12": "std.DoublyLinkedList", "13": "std.process", "15": "std.ascii",
+};
+function renderCookbookStdLinks() {
+  if (!current || !current.id) return;
+  const chapter = current.id.slice(0, 2);
+  const apis = new Set();
+  for (const m2 of (current.original || "").matchAll(/std\.[A-Za-z_][A-Za-z0-9_.]*/g)) {
+    const parts = m2[0].split(".");
+    if (parts.length >= 2) apis.add(parts.slice(0, 3).join("."));
+    if (apis.size >= 10) break;
+  }
+  const mod = CHAPTER_STD[chapter];
+  let html = mod ? `🔹 <a href="#" class="std-jump" data-sym="${mod}">${mod} 模块文档</a>` : "";
+  if (apis.size) html += `<br>` + [...apis].map(a => `🔸 <a href="#" class="std-jump" data-sym="${a}">${a}</a>`).join("<br>");
+  $("#refLinks").innerHTML = html || t("noSpecificRef");
+  $("#refLinks").querySelectorAll(".std-jump").forEach(a => {
+    a.onclick = (e) => { e.preventDefault(); document.querySelector('.tab[data-tab="ref"]').click(); loadDoc(STD + a.dataset.sym); };
+  });
 }
 function loadChatForCookbook(id) {
   chatHistory = (JSON.parse(localStorage.getItem("chats") || "{}"))["cookbook_" + id] || [];
@@ -914,6 +1030,19 @@ function toggleLesson() {
 $("#btnLesson").onclick = toggleLesson;
 $("#btnLessonFold").onclick = toggleLesson;
 $("#btnOutClose").onclick = () => { $("#outputCard").classList.add("hidden"); if (editor) editor.view.requestMeasure(); };
+
+/* cookbook 完成打勾 */
+async function markCookbookDone(id, done) {
+  await fetch("/api/cookbook/done", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, done })
+  });
+  if (cookbookList) {
+    const r = cookbookList.find(x => x.id === id);
+    if (r) r.done = done;
+    renderListSearchSafe();
+  }
+}
 if (localStorage.getItem("dockHidden") === "1") document.body.classList.add("dock-hidden");
 if (window.innerWidth < 1080) document.body.classList.add("dock-hidden");
 
