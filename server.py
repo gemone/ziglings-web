@@ -433,7 +433,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "bad file"}))
             _cookbook_ensure_fixtures(b.get("code") or "")
             res = run_scratch(b.get("code") or "", filename=fname,
-                              cwd=WORK, timeout=150)  # 首次编译新 std 模块较慢
+                              cwd=WORK, timeout=150,  # 首次编译新 std 模块较慢
+                              args=b.get("args"))
             res["cookbook"] = True
             return self._send(200, json.dumps(res))
         if self.path == "/api/cookbook/judge":
@@ -670,14 +671,22 @@ pub fn main() void {
 """
 
 
-def run_scratch(code, filename=SCRATCH_FILE, cwd=None, timeout=None):
-    """自由实验：编译+运行，不判题，退出码 0 即通过。"""
+def run_scratch(code, filename=SCRATCH_FILE, cwd=None, timeout=None, args=None):
+    """自由实验：编译+运行，不判题，退出码 0 即通过。args 为程序命令行参数。"""
     timeout = timeout or RUN_TIMEOUT
     path = os.path.join(WORK, filename)
+    extra = list(args or [])[:8]
+    for a in extra:
+        if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
+            return {"passed": False, "returncode": -1, "stdout": "", "stderr": "非法参数",
+                    "outputSeen": "", "expected": "", "scratch": True}
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(code)
-        p = subprocess.Popen([zig_exe(), "run", path], stdout=subprocess.PIPE,
+        cmd = [zig_exe(), "run", path]
+        if extra:
+            cmd += ["--"] + extra
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, env=ZIG_ENV,
                              cwd=cwd or ROOT)
         try:

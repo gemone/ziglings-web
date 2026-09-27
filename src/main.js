@@ -106,8 +106,11 @@ async function select(file) {
   lastResult = null;
   renderRefLinks();
   loadChat();
-  $("#btnSubmit").style.display = "";
-  $("#btnHint").style.display = "";
+  syncArgsInput();
+  const argsBoxReset = $("#argsInput");
+  if (argsBoxReset) argsBoxReset.value = "";
+  $("#btnSubmit").style.display = current.scratch ? "none" : "";
+  $("#btnHint").style.display = current.scratch ? "none" : "";
   renderList($("#search").value);
   if (location.hash !== "#" + file) history.replaceState(null, "", "#" + file);
 }
@@ -240,6 +243,26 @@ function saveDraft() {
 }
 
 /* ---------- run & submit ---------- */
+/* 程序参数输入（实验场 / cookbook 显示） */
+function syncArgsInput() {
+  const box = $("#argsBox");
+  if (!box) return;
+  box.style.display = current && (current.scratch || current.file.startsWith("cookbook_")) ? "" : "none";
+}
+async function run() {
+  if (!current) return;
+  $("#runStatus").textContent = t("running"); $("#runStatus").className = "";
+  const endpoint = current.file.startsWith("cookbook_") ? "/api/cookbook/run" : "/api/run";
+  const payload = { file: current.file, id: current.file.replace(/^cookbook_|\.zig$/g, ""), code: code() };
+  const argsVal = ($("#argsInput")?.value || "").trim();
+  if (argsVal) payload.args = argsVal.split(/\s+/);
+  const res = await (await fetch(endpoint, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  })).json();
+  lastResult = res;
+  showResult(res, false);
+}
 function showResult(res, submitted) {
   $("#outputCard").classList.remove("hidden");
   const out = $("#output");
@@ -291,18 +314,6 @@ function showResult(res, submitted) {
     if (submitted) $("#btnSubmit").disabled = true;
   }
   out.scrollTop = 0;
-}
-
-async function run() {
-  if (!current) return;
-  $("#runStatus").textContent = t("running"); $("#runStatus").className = "";
-  const endpoint = current.file.startsWith("cookbook_") ? "/api/cookbook/run" : "/api/run";
-  const res = await (await fetch(endpoint, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file: current.file, id: current.file.replace(/^cookbook_|\.zig$/g, ""), code: code() })
-  })).json();
-  lastResult = res;
-  showResult(res, false);
 }
 
 async function submit() {
@@ -607,7 +618,7 @@ $("#btnReset").onclick = async () => {
   }
 };
 $("#search").addEventListener("input", (e) => renderList(e.target.value));
-$("#btnScratch").onclick = () => select("__scratch__");
+$("#btnScratch").onclick = () => select("__scratch__").then(syncArgsInput);
 
 /* ---------- zig-cookbook：现场拉取 + 解析 ---------- */
 let cookbookMode = false, cookbookList = null;
@@ -680,6 +691,9 @@ async function selectRecipe(id) {
   $("#btnHint").style.display = "none";
   renderListSearchSafe();
   loadChatForCookbook(id);
+  syncArgsInput();
+  const ab = $("#argsInput");
+  if (ab) ab.value = "";
   renderCookbookStdLinks();
   setupCookbookButtons(id);
   if (editor) editor.view.focus();
