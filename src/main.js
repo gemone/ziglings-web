@@ -581,8 +581,8 @@ $("#btnScratch").onclick = () => select("__scratch__");
 let cookbookMode = false, cookbookList = null;
 const btnCookbook = document.createElement("button");
 btnCookbook.id = "btnCookbook";
-btnCookbook.textContent = "📖 食谱";
-btnCookbook.title = "zig-cookbook 配方（现场拉取解析）";
+btnCookbook.textContent = t("cookbookBtn");
+btnCookbook.title = "zig-cookbook（现场拉取解析）";
 $("#btnScratch").parentElement.insertBefore(btnCookbook, $("#btnScratch"));
 
 async function ensureCookbookList() {
@@ -612,15 +612,15 @@ function renderCookbookList() {
 }
 btnCookbook.onclick = async () => {
   cookbookMode = !cookbookMode;
-  btnCookbook.textContent = cookbookMode ? "↩ 练习题" : "📖 食谱";
+  btnCookbook.textContent = cookbookMode ? t("cookbookBack") : t("cookbookBtn");
   if (cookbookMode) {
-    btnCookbook.textContent = "⏳ 加载中";
+    btnCookbook.textContent = t("loading");
     await ensureCookbookList();
-    btnCookbook.textContent = "↩ 练习题";
+    btnCookbook.textContent = t("cookbookBack");
     current = null;
     renderCookbookList();
-    $("#exTitle").textContent = "📖 zig-cookbook";
-    $("#lesson").textContent = "选择左侧配方；正文与代码实时拉取自上游仓库并本地缓存。";
+    $("#exTitle").textContent = "📖 zig-cookbook — " + t("cookbookSub");
+    $("#lesson").textContent = t("cookbookHome");
     editor && editor.destroy(); editor = null;
     $("#outputCard").classList.add("hidden");
   } else {
@@ -637,7 +637,7 @@ async function selectRecipe(id) {
               original: res.original, uri: res.uri, rootUri: res.rootUri, prose: res.prose };
   mountEditor(res.code);
   const lang = document.querySelector('#lesson');
-  $("#lesson").innerHTML = renderMd(`### ${res.title}\n\n${res.prose}\n\n> 运行参考实现；修改代码后 Ctrl+Enter 立即看结果。`);
+  $("#lesson").innerHTML = renderMd(`### ${res.title}\n\n${res.prose}\n\n> Cookbook 示例：直接运行参考实现，修改后 Ctrl+Enter 立即看结果。`);
   $("#outputCard").classList.add("hidden");
   $("#runStatus").textContent = "";
   $("#btnSubmit").style.display = "none";
@@ -652,7 +652,7 @@ function renderListSearchSafe() {
 function loadChatForCookbook(id) {
   chatHistory = (JSON.parse(localStorage.getItem("chats") || "{}"))["cookbook_" + id] || [];
   chatLog.innerHTML = "";
-  addMsg("assistant", "📖 配方助手：这一页教你「" + current.title + "」。可以问语法、std API 用法或报错含义。");
+  addMsg("assistant", t("cookbookTutorPrefix") + "「" + current.title + "」。" + t("cookbookTutorSuffix"));
   for (const m of chatHistory) addMsg(m.role, m.content);
 }
 const freeBtn = $("#btnFree");
