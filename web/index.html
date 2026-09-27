@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ziglings Web — 引导式 Zig 学习</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">⚙️ Ziglings</span>
+    <span class="sub" data-i18n="appSub">修复破损的小程序，学会 Zig</span>
+  </div>
+  <div class="progress-wrap">
+    <div class="progress-bar"><div id="progressFill"></div></div>
+    <span id="progressText">0 / 0</span>
+  </div>
+  <div class="header-actions">
+    <button id="btnDocs" data-i18n="docs" title="Docs">📚 文档</button>
+    <button id="btnDock" data-i18n="dock" title="Toggle panel">⇥ 面板</button>
+    <button id="btnSettings" title="AI 设置">⚙️</button>
+    <button id="btnLang" title="切换语言 / Switch language">🌐</button>
+  </div>
+</header>
+
+<main>
+  <aside id="sidebar">
+    <input id="search" data-i18n-ph="searchPh" placeholder="搜索练习…" />
+    <div style="display:flex; gap:6px; margin:0 10px 6px;">
+      <button id="btnScratch" title="自由运行 Zig 代码，不判题">🧪 <span data-i18n="scratchBtn">实验场</span></button>
+      <button id="btnFree" style="flex:1" title="关闭时，完成上一章才能解锁下一章"></button>
+    </div>
+    <ul id="exList"></ul>
+  </aside>
+
+  <div id="splitSide" class="vsplit" title="拖动调整宽度"></div>
+
+  <section id="work">
+    <div id="exHeader">
+      <h2 id="exTitle"></h2>
+      <div id="exActions">
+        <button id="btnPrev" title="上一个">←</button>
+        <button id="btnNext" title="下一个">→</button>
+        <button id="btnLesson" data-i18n-title="lessonToggle" title="收起/展开题目说明">📖</button>
+        <button id="btnReset" data-i18n="reset" title="Restore original code">↺ 重置</button>
+      </div>
+    </div>
+    <div id="lessonCard" class="card">
+      <div class="card-head">
+        <span>📖 <span data-i18n="lessonTitle">题目说明</span></span>
+        <span style="display:flex; gap:2px;">
+          <button id="btnLessonTr" class="ghost" title="AI 翻译本题说明">🌐</button>
+          <button id="btnLessonFold" class="ghost" data-i18n-title="lessonToggle" title="收起/展开">▾</button>
+        </span>
+      </div>
+      <div id="lesson"></div>
+    </div>
+    <div id="splitLesson" class="hsplit" title="拖动调整高度"></div>
+    <div id="editorHost"></div>
+    <div id="runRow">
+      <button id="btnRun" class="primary">▶ <span data-i18n="run">运行</span> <small>Ctrl+Enter</small></button>
+      <button id="btnSubmit" class="submit" disabled data-i18n="submit" title="Judge & record progress">📤 提交</button>
+      <button id="btnExplain" data-i18n="explain" title="Send code & errors to AI">🤖 让 AI 解释</button>
+      <button id="btnHint" data-i18n="hint">💡 提示</button>
+      <span id="runStatus"></span>
+    </div>
+    <div id="outputCard" class="card hidden">
+      <div class="card-head">
+        <span>🖥 <span data-i18n="outTitle">输出</span></span>
+        <button id="btnOutClose" class="ghost" title="关闭">✕</button>
+      </div>
+      <pre id="output"></pre>
+    </div>
+  </section>
+
+  <div id="splitDock" class="vsplit" title="拖动调整宽度"></div>
+
+  <aside id="rightDock">
+    <div class="tabs">
+      <button class="tab active" data-tab="chat" data-i18n="tabChat">🤖 AI 助教</button>
+      <button class="tab" data-tab="ref" data-i18n="tabRef">📚 参考</button>
+    </div>
+    <div id="tab-chat" class="tabpane active">
+      <div id="chatLog"></div>
+      <div id="chatQuick">
+        <button data-q="用简单的中文解释这道题要求什么？" data-i18n-q="qExplain">解释题意</button>
+        <button data-q="指出我当前代码里的问题（不要直接给完整答案），并给我提示。" data-i18n-q="qHint">要提示不要答案</button>
+        <button id="btnChatClear" data-i18n="chatClear" title="Clear this exercise's chat">🗑 清空</button>
+      </div>
+      <div id="chatInputRow">
+        <textarea id="chatInput" rows="2" data-i18n-ph="chatPh" placeholder="问点什么…（Enter 发送）"></textarea>
+        <button id="btnSend" class="primary" data-i18n="send">发送</button>
+      </div>
+    </div>
+    <div id="tab-ref" class="tabpane">
+      <div id="docBar">
+        <select id="docPreset">
+          <option value="https://ziglang.org/documentation/0.16.0/std/">std 标准库 (0.16.0)</option>
+          <option value="https://ziglang.org/documentation/0.16.0/">Zig 语言参考 (0.16.0)</option>
+          <option value="https://ziglang.org/learn/overview/">Zig 语言概览</option>
+        </select>
+        <button id="btnDocLoad" data-i18n="docOpen">打开</button>
+        <button id="btnDocTranslate" data-i18n="docTranslate">🌐 翻译本页</button>
+        <button id="btnDocRestore" data-i18n-title="docRestoreTitle" title="重新加载恢复原文">↺ 原文</button>
+      </div>
+      <iframe id="docFrame" class="hidden"></iframe>
+      <div id="docHome" class="muted" style="font-size:.85rem; padding:4px 2px 10px;">
+        选择文档后点击「打开」，内嵌显示；点击「🌐 翻译本页」用 AI 翻译正文（代码保持原文）。
+      </div>
+      <div id="docLists">
+      <h3 data-i18n="refRelated">本练习相关</h3>
+      <div id="refLinks"></div>
+      <h3 data-i18n="refOfficial">官方文档</h3>
+      <ul class="reflist">
+        <li><a href="https://ziglang.org/documentation/0.16.0/" class="doc-link">Zig 语言参考 (0.16.0)</a></li>
+        <li><a href="https://ziglang.org/documentation/0.16.0/std/" class="doc-link">标准库 std 文档 (0.16.0)</a></li>
+        <li><a href="https://ziglang.org/learn/" class="doc-link">Zig Learn 官方教程</a></li>
+        <li><a href="https://ziglang.org/learn/overview/" class="doc-link">Zig 语言概览</a></li>
+      </ul>
+      <h3 data-i18n="refZiglings">Ziglings</h3>
+      <ul class="reflist">
+        <li><a href="https://codeberg.org/ziglings/exercises/" target="_blank">Ziglings 仓库（本题库来源）</a></li>
+        <li><a href="https://ziglang.org/download/" target="_blank">下载 Zig 工具链</a></li>
+      </ul>
+      <h3 data-i18n="refCheats">速查</h3>
+      <div id="cheatsheet"></div>
+    </div>
+  </aside>
+</main>
+
+<dialog id="settingsDlg">
+  <h3 data-i18n="settings">AI 设置（OpenAI 兼容接口）</h3>
+  <p class="muted" data-i18n="settingsHint">配置保存在本地 work/ai_config.json，仅发送到你自己填写的地址。</p>
+  <label><span data-i18n="cfgBase">Base URL</span><br><input id="cfgBase" placeholder="https://api.openai.com/v1"></label>
+  <label><span data-i18n="cfgKey">API Key</span><br><input id="cfgKey" type="password" data-i18n-ph="cfgKeyPh" placeholder="留空表示不修改"></label>
+  <label><span data-i18n="cfgModel">模型</span><br><input id="cfgModel" placeholder="gpt-4o-mini / deepseek-chat / …"></label>
+  <label><span data-i18n="cfgZig">Zig 版本</span>（自动切换对应 ziglings tag）<br><select id="cfgZigSel"></select></label>
+  <div class="dlg-actions">
+    <button id="cfgCancel" data-i18n="cancel">取消</button>
+    <button id="cfgSave" class="primary" data-i18n="save">保存</button>
+  </div>
+</dialog>
+
+<script src="/dist/bundle.js"></script>
+</body>
+</html>
