@@ -1163,7 +1163,12 @@ $("#cfgSave").onclick = async () => {
   dlg.close();
   addMsg("assistant", t("aiSaved"));
 };
-$("#btnDocs").onclick = () => document.querySelector('.tab[data-tab="ref"]').click();
+$("#btnDocs").onclick = () => {
+  document.body.classList.remove("dock-hidden");   // 面板收起时先展开
+  localStorage.setItem("dockHidden", "0");
+  document.querySelector('.tab[data-tab="ref"]').click();
+  if (editor) editor.view.requestMeasure();
+};
 
 /* ---------- 可拖拽分栏 ---------- */
 function setupSplit(handle, axis, getStart, apply, invert = false) { // axis: "x" | "y"
@@ -1292,16 +1297,39 @@ async function flushXlateQueue() {
   if (!st.queue.length && st.doneEls && st.doneEls.size >= st.blocksLen) { const b = $("#btnDocTranslate"); b.textContent = "✓ " + t("translated"); }
 }
 
-$("#btnDocTranslate").onclick = () => {
-  if (docXlate) { stopDocTranslate(); return; }
+let docTr = null; // {map:Map, target, observer}
+
+function stopDocTranslateSession() {
+  if (docTr && docTr.observer) docTr.observer.disconnect();
+  docTr = null;
+  const btn = $("#btnDocTranslate");
+  btn.textContent = t("docTranslate");
+}
+
+function applyDocTranslations(root, map) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n;
+  const hits = [];
+  while ((n = walker.nextNode())) {
+    const v = n.nodeValue.trim();
+    if (v.length > 1 && map.has(v)) hits.push(n);
+  }
+  for (const n of hits) {
+    const tr = map.get(n.nodeValue.trim());
+    if (tr) n.nodeValue = n.nodeValue.replace(n.nodeValue.trim(), tr);
+  }
+}
+
+$("#btnDocTranslate").onclick = async () => {
+  const btn = $("#btnDocTranslate");
+  if (docTr) { stopDocTranslateSession(); return; }
   if (!docFrame.src.includes("/p/ziglang.org/")) { loadDoc($("#docPreset").value); return; }
   const doc = docFrame.contentDocument;
   if (!doc || !doc.body) return;
-  const skip = new Set(["SCRIPT", "STYLE", "CODE", "PRE", "SVG", "KBD", "TEXTAREA"]);
-  const blocks = [...doc.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,summary,figcaption,blockquote,a,span,label,button,title")]
-    .filter(el => !skip.has(el.tagName) && el.offsetParent !== null &&
+  const skip = new Set(["SCRIPT", "STYLE", "CODE", "PRE", "KBD"]);
+  const blocks = [...doc.querySelectorAll("h1,h2,h3,h4,h5,h6,p,li,td,th,dt,dd,summary,figcaption,blockquote,a,span,label,button,div")]
+    .filter(el => !skip.has(el.tagName) &&
                   [...el.childNodes].some(n => n.nodeType === 3 && n.nodeValue.trim().length > 1));
-  if (!blocks.length) return;
   const nodes = [];
   const seen = new Set();
   for (const el of blocks) {
@@ -1312,62 +1340,59 @@ $("#btnDocTranslate").onclick = () => {
       }
     }
   }
-  docXlate = { queue: [], nodes: new Map(), map: new Map(), total: nodes.length, blocksLen: blocks.length, done: 0, running: false, target: getLang() === "en" ? "zh" : "en", win: null, harvest: null, doneEls: null };
-  $("#btnDocTranslate").disabled = false;
-  updateXlateBtn();
-  // 滚动到哪翻到哪：监听 iframe 滚动，把视口附近块元素的文本节点入队
-  const docWin = doc.defaultView;
-  const harvest = () => {
-    if (!docXlate) return;
-    const st = doc.scrollingElement ? doc.scrollingElement.scrollTop : docWin.scrollY;
-    const vh = docWin.innerHeight;
-    for (const el of blocks) {
-      if (docXlate.doneEls.has(el)) continue;
-      const top = el.getBoundingClientRect().top + st;
-      if (top > st + vh + 400) continue;   // 还在下方，未排序但可提前跳出（blocks 按文档序）
-      if (top < st - 600) { docXlate.doneEls.add(el); continue; } // 已翻过上方
-      docXlate.doneEls.add(el);
-      for (const n of el.childNodes) {
-        if (n.nodeType === 3 && !docXlate.nodes.has(n) && n.nodeValue.trim().length > 1) {
-          docXlate.queue.push(n);
+  if (!nodes.length) {
+    btn.textContent = "⚠ " + t("noTranslatable");
+    setTimeout(() => btn.textContent = t("docTranslate"), 2500);
+    return;
+  }
+  const uniq = [...new Set(nodes.map(n => n.nodeValue.trim()))];
+  const target = "zh";
+  const map = new Map();
+  docTr = { map, target, observer: null };
+  btn.disabled = true;
+  for (let i = 0; i < uniq.length; i += 30) {
+    const batch = uniq.slice(i, i + 30);
+    let size = 0; const sub = [];
+    for (const t of batch) { if (size + t.length > 3000 && sub.length) break; size += t.length; sub.push(t); }
+    btn.textContent = `⏳ ${t("translating")} ${Math.min(i + sub.length, uniq.length)}/${uniq.length}`;
+    try {
+      const res = await (await fetch("/api/translate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texts: sub, target })
+      })).json();
+      if (res.translations) sub.forEach((orig, k2) => {
+        const tr = res.translations[k2];
+        if (tr && !String(tr).startsWith("{")) map.set(orig, tr);
+      });
+      applyDocTranslations(doc.body, map);  // 每批即时应用，边翻边显示
+    } catch (e) { /* 单批失败保留原文 */ }
+  }
+  // SPA 重渲染监视：新增文本命中缓存即重套译文
+  const mo = new doc.defaultView.MutationObserver((muts) => {
+    for (const mu of muts) {
+      for (const n of mu.addedNodes) {
+        if (n.nodeType === 1 && n.querySelectorAll) {
+          for (const tn of n.querySelectorAll("*")) {
+            for (const c of tn.childNodes) {
+              if (c.nodeType === 3) {
+                const v = c.nodeValue.trim();
+                if (v.length > 1 && docTr && docTr.map.has(v) && c.nodeValue.includes(v)) {
+                  c.nodeValue = c.nodeValue.replace(v, docTr.map.get(v));
+                }
+              }
+            }
+          }
         }
       }
     }
-    flushXlateQueue();
-  };
-  docXlate.harvest = harvest;
-  docXlate.doneEls = new Set();
-  docXlate.win = docWin;
-  docWin.addEventListener("scroll", harvest, { passive: true });
-  harvest();
+  });
+  mo.observe(doc.body, { childList: true, subtree: true });
+  docTr.observer = mo;
+  btn.disabled = false;
+  btn.textContent = "✓ " + t("translated") + `（${map.size} 段）`;
 };
 
-function stopDocTranslateCleanup(st) {
-  if (st && st.harvest && st.win) st.win.removeEventListener("scroll", st.harvest);
-}
-
-/* language toggle *//* language toggle */
-$("#btnLang").onclick = () => {
-  setLang(getLang() === "zh" ? "en" : "zh");
-  location.reload(); // 简单起见：切换后整页刷新，全部文案重建
-};
-
-/* layout toggles — 编辑器吃满剩余空间 */
-$("#btnDock").onclick = () => {
-  document.body.classList.toggle("dock-hidden");
-  localStorage.setItem("dockHidden", document.body.classList.contains("dock-hidden") ? "1" : "0");
-  if (editor) editor.view.requestMeasure();
-};
-function toggleLesson() {
-  document.body.classList.toggle("lesson-collapsed");
-  $("#btnLessonFold").textContent = document.body.classList.contains("lesson-collapsed") ? "▸" : "▾";
-  if (editor) editor.view.requestMeasure();
-}
-$("#btnLesson").onclick = toggleLesson;
-$("#btnLessonFold").onclick = toggleLesson;
-$("#btnOutClose").onclick = () => { $("#outputCard").classList.add("hidden"); if (editor) editor.view.requestMeasure(); };
-
-/* cookbook 完成打勾 */
+/* cookbook 完成打勾 *//* cookbook 完成打勾 */
 async function markCookbookDone(id, done) {
   await fetch("/api/cookbook/done", {
     method: "POST", headers: { "Content-Type": "application/json" },
