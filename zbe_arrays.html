@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width,initial-scale=1">
+		<title>Arrays</title>
+		<link rel="stylesheet" type="text/css" href="style.css">
+	</head>
+
+	<body>
+
+		<div id="content">
+
+		<h1>Arrays</h1>
+
+		<p>An <em>array</em> is a sequence of values of the same type with fixed
+length:</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode zig"><code class="sourceCode zig"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="at">const</span> std <span class="op">=</span> <span class="bu">@import</span>(<span class="st">&quot;std&quot;</span>);</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="at">const</span> expect <span class="op">=</span> std<span class="op">.</span>testing<span class="op">.</span>expect;</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="at">const</span> expectEqual <span class="op">=</span> std<span class="op">.</span>testing<span class="op">.</span>expectEqual;</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="kw">test</span> <span class="st">&quot;array literals&quot;</span> {</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Three ways to define an array of five u64:</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> a <span class="op">=</span> [<span class="dv">5</span>]<span class="dt">u64</span>{ <span class="dv">1</span><span class="op">,</span> <span class="dv">2</span><span class="op">,</span> <span class="dv">3</span><span class="op">,</span> <span class="dv">4</span><span class="op">,</span> <span class="dv">5</span> };</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> b <span class="op">=</span> [_]<span class="dt">u64</span>{ <span class="dv">1</span><span class="op">,</span> <span class="dv">2</span><span class="op">,</span> <span class="dv">3</span><span class="op">,</span> <span class="dv">4</span><span class="op">,</span> <span class="dv">5</span> };</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> c<span class="op">:</span> [<span class="dv">5</span>]<span class="dt">u64</span> <span class="op">=</span> <span class="op">.</span>{ <span class="dv">1</span><span class="op">,</span> <span class="dv">2</span><span class="op">,</span> <span class="dv">3</span><span class="op">,</span> <span class="dv">4</span><span class="op">,</span> <span class="dv">5</span> };</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expect(<span class="bu">@TypeOf</span>(a) <span class="op">==</span> [<span class="dv">5</span>]<span class="dt">u64</span>);</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expect(<span class="bu">@TypeOf</span>(b) <span class="op">==</span> [<span class="dv">5</span>]<span class="dt">u64</span>);</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expect(<span class="bu">@TypeOf</span>(c) <span class="op">==</span> [<span class="dv">5</span>]<span class="dt">u64</span>);</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>    <span class="co">// .len gives us the length (number of elements).</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expect(a<span class="op">.</span>len <span class="op">==</span> <span class="dv">5</span>);</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a><span class="kw">test</span> <span class="st">&quot;array indexing&quot;</span> {</span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Use […] to get or set a value.</span></span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a>    <span class="at">var</span> a <span class="op">=</span> [<span class="dv">5</span>]<span class="dt">u64</span>{ <span class="dv">1</span><span class="op">,</span> <span class="dv">2</span><span class="op">,</span> <span class="dv">3</span><span class="op">,</span> <span class="dv">4</span><span class="op">,</span> <span class="dv">5</span> };</span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expect(a[<span class="dv">4</span>] <span class="op">==</span> <span class="dv">5</span>);</span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a>    a[<span class="dv">4</span>] <span class="op">*=</span> <span class="dv">2</span>;</span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expect(a[<span class="dv">4</span>] <span class="op">==</span> <span class="dv">10</span>);</span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true" tabindex="-1"></a><span class="kw">test</span> <span class="st">&quot;++ operator&quot;</span> {</span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true" tabindex="-1"></a>    <span class="co">// The ++ operator concatenates two arrays.</span></span>
+<span id="cb1-30"><a href="#cb1-30" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> a <span class="op">=</span> [_]<span class="dt">u64</span>{ <span class="dv">1</span><span class="op">,</span> <span class="dv">2</span> };</span>
+<span id="cb1-31"><a href="#cb1-31" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> b <span class="op">=</span> [_]<span class="dt">u64</span>{ <span class="dv">3</span><span class="op">,</span> <span class="dv">4</span> };</span>
+<span id="cb1-32"><a href="#cb1-32" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> c <span class="op">=</span> a <span class="op">++</span> b;</span>
+<span id="cb1-33"><a href="#cb1-33" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expectEqual([<span class="dv">4</span>]<span class="dt">u64</span>{ <span class="dv">1</span><span class="op">,</span> <span class="dv">2</span><span class="op">,</span> <span class="dv">3</span><span class="op">,</span> <span class="dv">4</span> }<span class="op">,</span> c);</span>
+<span id="cb1-34"><a href="#cb1-34" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb1-35"><a href="#cb1-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-36"><a href="#cb1-36" aria-hidden="true" tabindex="-1"></a><span class="kw">test</span> <span class="st">&quot;@splat builtin function&quot;</span> {</span>
+<span id="cb1-37"><a href="#cb1-37" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Use @splat to initialize all elements:</span></span>
+<span id="cb1-38"><a href="#cb1-38" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> a<span class="op">:</span> [<span class="dv">6</span>]<span class="dt">u64</span> <span class="op">=</span> <span class="bu">@splat</span>(<span class="dv">0</span>);</span>
+<span id="cb1-39"><a href="#cb1-39" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expectEqual([<span class="dv">6</span>]<span class="dt">u64</span>{ <span class="dv">0</span><span class="op">,</span> <span class="dv">0</span><span class="op">,</span> <span class="dv">0</span><span class="op">,</span> <span class="dv">0</span><span class="op">,</span> <span class="dv">0</span><span class="op">,</span> <span class="dv">0</span> }<span class="op">,</span> a);</span>
+<span id="cb1-40"><a href="#cb1-40" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb1-41"><a href="#cb1-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-42"><a href="#cb1-42" aria-hidden="true" tabindex="-1"></a><span class="kw">test</span> <span class="st">&quot;multi-dimensional arrays&quot;</span> {</span>
+<span id="cb1-43"><a href="#cb1-43" aria-hidden="true" tabindex="-1"></a>    <span class="at">const</span> matrix<span class="op">:</span> [<span class="dv">3</span>][<span class="dv">3</span>]<span class="dt">f64</span> <span class="op">=</span> <span class="op">.</span>{</span>
+<span id="cb1-44"><a href="#cb1-44" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>{ <span class="dv">1</span><span class="op">,</span> <span class="dv">0</span><span class="op">,</span> <span class="dv">4</span> }<span class="op">,</span></span>
+<span id="cb1-45"><a href="#cb1-45" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>{ <span class="dv">0</span><span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">5</span> }<span class="op">,</span></span>
+<span id="cb1-46"><a href="#cb1-46" aria-hidden="true" tabindex="-1"></a>        <span class="op">.</span>{ <span class="dv">0</span><span class="op">,</span> <span class="dv">0</span><span class="op">,</span> <span class="dv">1</span> }<span class="op">,</span></span>
+<span id="cb1-47"><a href="#cb1-47" aria-hidden="true" tabindex="-1"></a>    };</span>
+<span id="cb1-48"><a href="#cb1-48" aria-hidden="true" tabindex="-1"></a>    <span class="cf">try</span> expect(matrix[<span class="dv">1</span>][<span class="dv">2</span>] <span class="op">==</span> <span class="dv">5</span>); <span class="co">// row 1, col 2</span></span>
+<span id="cb1-49"><a href="#cb1-49" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<pre><code>$ zig test arrays.zig
+1/5 arrays.test.array literals...OK
+2/5 arrays.test.array indexing...OK
+3/5 arrays.test.++ operator...OK
+4/5 arrays.test.@splat builtin function...OK
+5/5 arrays.test.multi-dimensional arrays...OK
+All 5 tests passed.</code></pre>
+<p>Next example: <a href="slices.html">Slices</a>.</p>
+
+		<p class="footer">
+			<a href="index.html">Zig by Example</a>
+			&middot;
+			<a href="about.html">about</a>
+			&middot;
+			<a href="https://codeberg.org/levin/zigbyexample">source</a>
+		</p>
+
+		</div>
+
+	</body>
+
+</html>

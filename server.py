@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from lsp_bridge import LspBridge
 import cookbook
+import zigbyexample
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -241,6 +242,28 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     def do_GET(self):
+        if self.path.split("?")[0] == "/api/zbe":
+            lang = ""
+            try:
+                return self._send(200, json.dumps(zigbyexample.list_pages()))
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取 zigbyexample 失败: {e}"}))
+        if self.path.startswith("/api/zbe/page/"):
+            slug = self.path.split("/page/")[1].split("?")[0]
+            try:
+                page = zigbyexample.get_page(slug)
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            code = self._user_code("zbe_" + slug + ".zig") or (page["snippets"][0]["zig"] if page["snippets"] else "")
+            return self._send(200, json.dumps({
+                "slug": slug, "title": page["title"], "prose": page["prose"],
+                "code": code, "original": page["snippets"][0]["zig"] if page["snippets"] else "",
+                "snippets": page["snippets"], "url": page["url"],
+                "uri": "file://" + os.path.join(WORK, "zbe_" + slug + ".zig"),
+                "rootUri": "file://" + WORK, "scratch": True,
+            }))
+        if self.path == "/api/zbe/progress":
+            return self._send(200, json.dumps(load_json(os.path.join(ROOT, "work", "zbe_progress.json"), {})))
         if self.path.startswith("/api/runbg/status/"):
             rid = self.path.rsplit("/", 1)[1]
             ent = BGRUNS.get(rid)
@@ -451,6 +474,16 @@ class Handler(BaseHTTPRequestHandler):
             BY_FILE = {e["file"]: e for e in EXERCISES}
             return self._send(200, json.dumps({"ok": ok, "ziglings": info} if ok
                                               else {"error": info}))
+        if self.path == "/api/zbe/done":
+            b = self._json_body()
+            slug = b.get("slug") or ""
+            progress = load_json(os.path.join(ROOT, "work", "zbe_progress.json"), {})
+            if b.get("done"):
+                progress[slug] = True
+            else:
+                progress.pop(slug, None)
+            save_json(os.path.join(ROOT, "work", "zbe_progress.json"), progress)
+            return self._send(200, json.dumps({"ok": True}))
         if self.path.startswith("/api/runbg/stop/"):
             rid = self.path.rsplit("/", 1)[1]
             ent = BGRUNS.get(rid)
@@ -512,7 +545,8 @@ class Handler(BaseHTTPRequestHandler):
             for a in args:
                 if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
                     return self._send(400, json.dumps({"error": "非法参数"}))
-            rid = start_bg_run(b.get("code") or "", fname, args, WORK)
+            mode = b.get("mode") if b.get("mode") in ("run", "test") else "run"
+            rid = start_bg_run(b.get("code") or "", fname, args, WORK, mode)
             return self._send(200, json.dumps({"runId": rid}))
         if self.path == "/api/translate":
             b = self._json_body()
@@ -578,13 +612,13 @@ BG_LOCK = threading.Lock()
 BG_HARD_LIMIT = 600  # 后台任务最长 10 分钟
 
 
-def _bg_worker(run_id, code, filename, args, cwd):
+def _bg_worker(run_id, code, filename, args, cwd, mode="run"):
     ent = BGRUNS[run_id]
     path = os.path.join(WORK, filename)
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(code)
-    cmd = [zig_exe(), "run", path]
+    cmd = [zig_exe(), "test" if mode == "test" else "run", path]
     if args:
         cmd += ["--"] + args
     try:
@@ -619,7 +653,7 @@ def _bg_worker(run_id, code, filename, args, cwd):
     ent["done"] = True
 
 
-def start_bg_run(code, filename, args=None, cwd=None):
+def start_bg_run(code, filename, args=None, cwd=None, mode="run"):
     rid = f"r{int(time.time()*1000)}"
     args = [a for a in (args or [])][:8]
     ent = {"p": None, "out": [], "err": [], "done": False, "rc": None,
@@ -631,7 +665,7 @@ def start_bg_run(code, filename, args=None, cwd=None):
             for k in list(BGRUNS)[:-12]:
                 if BGRUNS[k].get("done"):
                     BGRUNS.pop(k, None)
-    t = threading.Thread(target=_bg_worker, args=(rid, code, filename, args, cwd or WORK), daemon=True)
+    t = threading.Thread(target=_bg_worker, args=(rid, code, filename, args, cwd or WORK, mode), daemon=True)
     ent["thread"] = t
     t.start()
     return rid
