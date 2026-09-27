@@ -249,19 +249,105 @@ function syncArgsInput() {
   if (!box) return;
   box.style.display = current && (current.scratch || current.file.startsWith("cookbook_")) ? "" : "none";
 }
+/* ---------- 后台运行（实时输出，可多个同时跑） ---------- */
+const bgRuns = new Map();   // runId -> {title, timer, port}
+let focusedRun = null;      // 输出面板当前聚焦的 run
+
+function renderBgChips() {
+  let box = $("#bgChips");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "bgChips";
+    $("#runRow").after(box);
+  }
+  box.innerHTML = "";
+  for (const [rid, meta] of bgRuns) {
+    const chip = document.createElement("span");
+    chip.className = "bg-chip" + (rid === focusedRun ? " active" : "");
+    chip.innerHTML = `<span class="dot ${meta.running ? "run" : "done"}"></span>${meta.title}` +
+      (meta.port ? ` <b>:${meta.port}</b>` : "");
+    chip.onclick = () => { focusedRun = rid; renderBgChips(); pollBgOnce(rid, true); };
+    const stop = document.createElement("button");
+    stop.textContent = meta.running ? "■" : "✕";
+    stop.title = meta.running ? "停止" : "移除";
+    stop.onclick = async (e) => {
+      e.stopPropagation();
+      if (meta.running) await fetch("/api/runbg/stop/" + rid, { method: "POST" });
+      clearInterval(meta.timer);
+      bgRuns.delete(rid);
+      if (focusedRun === rid) focusedRun = null;
+      renderBgChips();
+    };
+    chip.appendChild(stop);
+    box.appendChild(chip);
+  }
+}
+
+async function pollBgOnce(rid, force) {
+  if (focusedRun !== rid && !force) return;
+  const meta = bgRuns.get(rid);
+  if (!meta) return;
+  try {
+    const st = await (await fetch("/api/runbg/status/" + rid)).json();
+    const out = $("#output");
+    $("#outputCard").classList.remove("hidden");
+    if (st.output) out.textContent = st.output;
+    // 自动检测监听端口
+    const pm = st.output.match(/Listening on 127\.0\.0\.1:(\d+)/);
+    if (pm && !meta.port) {
+      meta.port = pm[1];
+      if (!$("#argsInput").value) {
+        $("#argsInput").value = pm[1];
+        $("#argsInput").style.borderColor = "var(--ok)";
+        setTimeout(() => { $("#argsInput").style.borderColor = ""; }, 1500);
+      }
+      renderBgChips();
+    }
+    out.scrollTop = out.scrollHeight;
+    if (!st.running) {
+      meta.running = false;
+      renderBgChips();
+      $("#runStatus").textContent = st.returncode === 0 ? t("scratchOk") : (t("exitWith") + st.returncode);
+      $("#runStatus").className = st.returncode === 0 ? "ok" : "err";
+      clearInterval(meta.timer);
+    } else {
+      $("#runStatus").textContent = "🟢 运行中";
+      $("#runStatus").className = "ok";
+    }
+  } catch {}
+}
+
 async function run() {
   if (!current) return;
-  $("#runStatus").textContent = t("running"); $("#runStatus").className = "";
-  const endpoint = current.file.startsWith("cookbook_") ? "/api/cookbook/run" : "/api/run";
-  const payload = { file: current.file, id: current.file.replace(/^cookbook_|\.zig$/g, ""), code: code() };
+  const isZiglings = !current.scratch && !current.file.startsWith("cookbook_");
+  if (isZiglings) {  // 练习判题保持同步模式
+    $("#runStatus").textContent = t("running"); $("#runStatus").className = "";
+    const res = await (await fetch("/api/run", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: current.file, code: code() })
+    })).json();
+    lastResult = res;
+    showResult(res, false);
+    return;
+  }
+  // cookbook / scratch / playground → 后台运行，实时输出
+  const payload = { file: current.file, id: current.id || "", code: code() };
   const argsVal = ($("#argsInput")?.value || "").trim();
   if (argsVal) payload.args = argsVal.split(/\s+/);
-  const res = await (await fetch(endpoint, {
+  const { runId } = await (await fetch("/api/runbg/start", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   })).json();
-  lastResult = res;
-  showResult(res, false);
+  bgRuns.set(runId, { title: `${current.title}`, running: true, timer: null, port: null });
+  focusedRun = runId;
+  $("#outputCard").classList.remove("hidden");
+  $("#output").textContent = "";
+  renderBgChips();
+  meta_poll: {
+    const meta = bgRuns.get(runId);
+    meta.timer = setInterval(() => pollBgOnce(runId), 900);
+  }
+  await pollBgOnce(runId, true);
 }
 function showResult(res, submitted) {
   $("#outputCard").classList.remove("hidden");

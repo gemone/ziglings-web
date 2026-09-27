@@ -241,6 +241,23 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n) or b"{}")
 
     def do_GET(self):
+        if self.path.startswith("/api/runbg/status/"):
+            rid = self.path.rsplit("/", 1)[1]
+            ent = BGRUNS.get(rid)
+            if not ent:
+                return self._send(404, json.dumps({"error": "no such run"}))
+            with ent["lock"]:
+                output = "".join(ent["out"])
+            return self._send(200, json.dumps({
+                "running": not ent["done"], "returncode": ent["rc"], "output": output,
+                "file": ent["file"],
+            }))
+        if self.path.startswith("/api/runbg/stop/"):
+            rid = self.path.rsplit("/", 1)[1]
+            ent = BGRUNS.get(rid)
+            if ent and ent["p"] and ent["p"].poll() is None:
+                ent["p"].kill()
+            return self._send(200, json.dumps({"ok": True}))
         if self.path.startswith("/p/ziglang.org/"):
             return self._proxy_subtree()
         if self.path.startswith("/proxy?url="):
@@ -425,6 +442,12 @@ class Handler(BaseHTTPRequestHandler):
             BY_FILE = {e["file"]: e for e in EXERCISES}
             return self._send(200, json.dumps({"ok": ok, "ziglings": info} if ok
                                               else {"error": info}))
+        if self.path.startswith("/api/runbg/stop/"):
+            rid = self.path.rsplit("/", 1)[1]
+            ent = BGRUNS.get(rid)
+            if ent and ent["p"] and ent["p"].poll() is None:
+                ent["p"].kill()
+            return self._send(200, json.dumps({"ok": True}))
         if self.path == "/api/cookbook/run":
             b = self._json_body()
             rid = b.get("id") or "unknown"
@@ -469,6 +492,17 @@ class Handler(BaseHTTPRequestHandler):
                 progress.pop(rid, None)
             save_json(os.path.join(ROOT, "work", "cookbook_progress.json"), progress)
             return self._send(200, json.dumps({"ok": True}))
+        if self.path == "/api/runbg/start":
+            b = self._json_body()
+            fname = os.path.basename(b.get("file") or "scratch.zig")
+            if not re.fullmatch(r"[A-Za-z0-9_-]+\.zig", fname):
+                return self._send(400, json.dumps({"error": "bad file"}))
+            args = b.get("args") or []
+            for a in args:
+                if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
+                    return self._send(400, json.dumps({"error": "非法参数"}))
+            rid = start_bg_run(b.get("code") or "", fname, args, WORK)
+            return self._send(200, json.dumps({"runId": rid}))
         if self.path == "/api/translate":
             b = self._json_body()
             texts = b.get("texts") or []
@@ -525,6 +559,71 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+# ---------- 后台运行任务（支持同时跑服务器+客户端） ----------
+BGRUNS = {}   # runId -> {"p":Popen,"out":[],"lock":Lock,"done":bool,"rc":None,"file":str,"thread":...}
+BG_LOCK = threading.Lock()
+BG_HARD_LIMIT = 600  # 后台任务最长 10 分钟
+
+
+def _bg_worker(run_id, code, filename, args, cwd):
+    ent = BGRUNS[run_id]
+    path = os.path.join(WORK, filename)
+    with _lock:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(code)
+    cmd = [zig_exe(), "run", path]
+    if args:
+        cmd += ["--"] + args
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, env=ZIG_ENV, cwd=cwd)
+    except Exception as e:
+        ent["err"].append(str(e))
+        ent["done"] = True
+        ent["rc"] = -1
+        return
+    ent["p"] = p
+    started = time.time()
+
+    def pump(pipe, sink):
+        for line in iter(pipe.readline, ""):
+            with ent["lock"]:
+                sink.append(line)
+                # 限制缓冲 200KB
+                if sum(len(x) for x in ent["out"]) > 200_000:
+                    del ent["out"][0]
+        pipe.close()
+
+    t1 = threading.Thread(target=pump, args=(p.stdout, ent["out"]), daemon=True)
+    t2 = threading.Thread(target=pump, args=(p.stderr, ent["out"]), daemon=True)
+    t1.start(); t2.start()
+    while p.poll() is None and time.time() - started < BG_HARD_LIMIT:
+        time.sleep(0.2)
+    if p.poll() is None:
+        p.kill()
+    ent["rc"] = p.wait()
+    t1.join(timeout=2); t2.join(timeout=2)
+    ent["done"] = True
+
+
+def start_bg_run(code, filename, args=None, cwd=None):
+    rid = f"r{int(time.time()*1000)}"
+    args = [a for a in (args or [])][:8]
+    ent = {"p": None, "out": [], "err": [], "done": False, "rc": None,
+           "file": filename, "lock": threading.Lock()}
+    with BG_LOCK:
+        # 清理已完成超过 10 分钟的旧任务
+        BGRUNS[rid] = ent
+        if len(BGRUNS) > 12:
+            for k in list(BGRUNS)[:-12]:
+                if BGRUNS[k].get("done"):
+                    BGRUNS.pop(k, None)
+    t = threading.Thread(target=_bg_worker, args=(rid, code, filename, args, cwd or WORK), daemon=True)
+    ent["thread"] = t
+    t.start()
+    return rid
 
     ALLOWED_DOC_HOSTS = ("ziglang.org", "www.ziglang.org")
 

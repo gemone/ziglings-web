@@ -95,7 +95,8 @@ main { flex: 1; display: flex; min-height: 0; overflow: hidden; }
   display: flex; flex-direction: column; background: var(--bg2);
 }
 #search { margin: 10px 10px 6px; }
-#btnScratch, #btnFree { margin: 0 10px 6px; font-size: .8rem; padding: 4px 6px; }
+#btnScratch, #btnFree, #btnCookbook { margin: 0 4px 6px; font-size: .78rem; padding: 4px 4px; white-space: nowrap; }
+#sidebar > div[style*="flex"] { display: flex; gap: 4px; margin: 0 6px 6px !important; }
 #btnScratch { flex: 1; }
 #exList { list-style: none; margin: 0; padding: 0 6px 12px; overflow-y: auto; flex: 1; }
 #exList li.chapter {
@@ -248,3 +249,20 @@ dialog input { width: 100%; margin-top: 4px; }
 #docFrame { width: 100%; height: 52vh; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
 .doc-link { cursor: pointer; }
 #docLists h3 { margin-top: 16px; }
+
+/* 后台运行芯片 */
+#bgChips { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+.bg-chip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 14px;
+  padding: 3px 10px; font-size: .8rem; max-width: 240px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bg-chip.active { border-color: var(--accent); }
+.bg-chip b { color: var(--accent2); }
+.bg-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.bg-chip .dot.run { background: var(--ok); animation: pulse 1.2s infinite; }
+.bg-chip .dot.done { background: var(--muted); }
+@keyframes pulse { 50% { opacity: .4; } }
+.bg-chip button { background: none; border: none; padding: 0 2px; color: var(--muted); font-size: .8rem; }
+.bg-chip button:hover { color: var(--err); }
