@@ -106,6 +106,8 @@ async function select(file) {
   lastResult = null;
   renderRefLinks();
   loadChat();
+  $("#btnSubmit").style.display = "";
+  $("#btnHint").style.display = "";
   renderList($("#search").value);
   if (location.hash !== "#" + file) history.replaceState(null, "", "#" + file);
 }
@@ -278,9 +280,10 @@ function showResult(res, submitted) {
 async function run() {
   if (!current) return;
   $("#runStatus").textContent = t("running"); $("#runStatus").className = "";
-  const res = await (await fetch("/api/run", {
+  const endpoint = current.file.startsWith("cookbook_") ? "/api/cookbook/run" : "/api/run";
+  const res = await (await fetch(endpoint, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file: current.file, code: code() })
+    body: JSON.stringify({ file: current.file, id: current.file.replace(/^cookbook_|\.zig$/g, ""), code: code() })
   })).json();
   lastResult = res;
   showResult(res, false);
@@ -391,14 +394,52 @@ async function sendChat(extraContext) {
   chatHistory.push({ role: "user", content });
   const pending = addMsg("assistant", t("thinking"));
   try {
-    const res = await (await fetch("/api/chat", {
+    const res = await fetch("/api/chat", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: systemMessages().concat(chatHistory) })
-    })).json();
+    });
     if ((current ? current.file : null) !== askFile) return; // 已切换题目，丢弃
-    if (res.error) { pending.className = "msg error"; pending.textContent = res.error; return; }
-    pending.innerHTML = renderMd(res.reply || "(空回复)"); decorateMsg(pending);
-    chatHistory.push({ role: "assistant", content: res.reply });
+    if (!res.ok || !(res.headers.get("Content-Type") || "").includes("text/event-stream")) {
+      const data = await res.json().catch(() => ({}));
+      pending.className = "msg error";
+      pending.textContent = data.error || (t("reqFailed") + res.status);
+      return;
+    }
+    // 流式读取 SSE，逐字渲染
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", reply = "", flushTimer = null;
+    const render = () => {
+      flushTimer = null;
+      pending.innerHTML = renderMd(reply);
+      decorateMsg(pending);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 2);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") continue;
+        let ev;
+        try { ev = JSON.parse(payload); } catch { continue; }
+        if (ev.error) { pending.className = "msg error"; pending.textContent = ev.error; return; }
+        const delta = ev.choices?.[0]?.delta?.content;
+        if (delta) {
+          reply += delta;
+          if (!flushTimer) flushTimer = setTimeout(render, 80); // 节流渲染
+        }
+      }
+    }
+    clearTimeout(flushTimer);
+    if ((current ? current.file : null) !== askFile) return; // 流结束前切题，丢弃
+    pending.innerHTML = renderMd(reply || "(空回复)"); decorateMsg(pending);
+    chatHistory.push({ role: "assistant", content: reply });
     saveChat();
   } catch (e) {
     pending.className = "msg error";
@@ -535,6 +576,85 @@ $("#btnReset").onclick = async () => {
 };
 $("#search").addEventListener("input", (e) => renderList(e.target.value));
 $("#btnScratch").onclick = () => select("__scratch__");
+
+/* ---------- zig-cookbook：现场拉取 + 解析 ---------- */
+let cookbookMode = false, cookbookList = null;
+const btnCookbook = document.createElement("button");
+btnCookbook.id = "btnCookbook";
+btnCookbook.textContent = "📖 食谱";
+btnCookbook.title = "zig-cookbook 配方（现场拉取解析）";
+$("#btnScratch").parentElement.insertBefore(btnCookbook, $("#btnScratch"));
+
+async function ensureCookbookList() {
+  if (cookbookList) return cookbookList;
+  cookbookList = await (await fetch("/api/cookbook?lang=" + getLang())).json();
+  return cookbookList;
+}
+function renderCookbookList() {
+  const ul = $("#exList");
+  ul.innerHTML = "";
+  let last = null;
+  for (const r of cookbookList) {
+    if (r.chapter !== last) {
+      last = r.chapter;
+      const head = document.createElement("li");
+      head.className = "chapter";
+      head.innerHTML = `<span class="ch-icon">📖</span><span class="ch-name">${r.chapterName}</span>` +
+        `<span class="ch-prog">${r.chapter}</span>`;
+      ul.appendChild(head);
+    }
+    const li = document.createElement("li");
+    li.className = current && current.file === "cookbook_" + r.id + ".zig" ? "active" : "";
+    li.innerHTML = `<span class="ex-title">${r.title}</span>`;
+    li.onclick = () => selectRecipe(r.id);
+    ul.appendChild(li);
+  }
+}
+btnCookbook.onclick = async () => {
+  cookbookMode = !cookbookMode;
+  btnCookbook.textContent = cookbookMode ? "↩ 练习题" : "📖 食谱";
+  if (cookbookMode) {
+    btnCookbook.textContent = "⏳ 加载中";
+    await ensureCookbookList();
+    btnCookbook.textContent = "↩ 练习题";
+    current = null;
+    renderCookbookList();
+    $("#exTitle").textContent = "📖 zig-cookbook";
+    $("#lesson").textContent = "选择左侧配方；正文与代码实时拉取自上游仓库并本地缓存。";
+    editor && editor.destroy(); editor = null;
+    $("#outputCard").classList.add("hidden");
+  } else {
+    renderList($("#search").value);
+  }
+};
+
+async function selectRecipe(id) {
+  cookbookMode = true;
+  const res = await (await fetch(`/api/cookbook/recipe/${id}?lang=${getLang() === "en" ? "en-US" : "zh-CN"}`)).json();
+  if (res.error) { addMsg("error", res.error); return; }
+  current = { file: "cookbook_" + id + ".zig", title: res.title, n: 0,
+              output: "", hint: null, skip: false, scratch: true,
+              original: res.original, uri: res.uri, rootUri: res.rootUri, prose: res.prose };
+  mountEditor(res.code);
+  const lang = document.querySelector('#lesson');
+  $("#lesson").innerHTML = renderMd(`### ${res.title}\n\n${res.prose}\n\n> 运行参考实现；修改代码后 Ctrl+Enter 立即看结果。`);
+  $("#outputCard").classList.add("hidden");
+  $("#runStatus").textContent = "";
+  $("#btnSubmit").style.display = "none";
+  $("#btnHint").style.display = "none";
+  renderListSearchSafe();
+  loadChatForCookbook(id);
+  if (editor) editor.view.focus();
+}
+function renderListSearchSafe() {
+  if (cookbookMode) renderCookbookList(); else renderList($("#search").value);
+}
+function loadChatForCookbook(id) {
+  chatHistory = (JSON.parse(localStorage.getItem("chats") || "{}"))["cookbook_" + id] || [];
+  chatLog.innerHTML = "";
+  addMsg("assistant", "📖 配方助手：这一页教你「" + current.title + "」。可以问语法、std API 用法或报错含义。");
+  for (const m of chatHistory) addMsg(m.role, m.content);
+}
 const freeBtn = $("#btnFree");
 function syncFreeBtn() {
   freeBtn.textContent = isFree() ? t("freeOn") : t("freeOff");

@@ -23,6 +23,7 @@ import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from lsp_bridge import LspBridge
+import cookbook
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -275,6 +276,32 @@ class Handler(BaseHTTPRequestHandler):
                 "uri": "file://" + os.path.join(WORK, f),
                 "rootUri": "file://" + WORK,
             }))
+        if self.path.split("?")[0] == "/api/cookbook":
+            from urllib.parse import urlparse, parse_qs
+            lang = "en-US" if "en" in (parse_qs(urlparse(self.path).query).get("lang") or ["zh"]) else "zh-CN"
+            try:
+                return self._send(200, json.dumps(cookbook.list_recipes(lang)))
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取 cookbook 失败: {e}"}))
+        if self.path.startswith("/api/cookbook/recipe/"):
+            from urllib.parse import urlparse, parse_qs
+            rid = self.path.split("/recipe/")[1].split("?")[0]
+            q = parse_qs(urlparse(self.path).query)
+            lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
+            try:
+                r = cookbook.get_recipe(rid, lang)
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            code = self._user_code("cookbook_" + rid + ".zig") or r["code"]
+            return self._send(200, json.dumps({
+                "id": rid, "title": r["title"], "prose": r["prose"],
+                "code": code, "original": r["code"],
+                "uri": "file://" + os.path.join(WORK, "cookbook_" + rid + ".zig"),
+                "rootUri": "file://" + WORK, "scratch": True,
+            }))
+        if self.path == "/api/cookbook/progress":
+            progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
+            return self._send(200, json.dumps(progress))
         if self.path == "/api/env":
             return self._send(200, json.dumps({
                 "zigs": list_zigs(),
@@ -328,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(res))
         if self.path.startswith("/api/solution/"):
             f = os.path.basename(self.path)
-            if f not in BY_FILE:
+            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith("cookbook_"):
                 return self._send(400, json.dumps({"error": "unknown exercise"}))
             b = self._json_body()
             with open(os.path.join(WORK, f), "w", encoding="utf-8") as fh:
@@ -375,6 +402,37 @@ class Handler(BaseHTTPRequestHandler):
             BY_FILE = {e["file"]: e for e in EXERCISES}
             return self._send(200, json.dumps({"ok": ok, "ziglings": info} if ok
                                               else {"error": info}))
+        if self.path == "/api/cookbook/run":
+            b = self._json_body()
+            rid = b.get("id") or "unknown"
+            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+                return self._send(400, json.dumps({"error": "bad id"}))
+            # 配方夹具：从上游拉取配方需要的样本文件（如 tests/zig-zen.txt）
+            for m in re.finditer(r'"((?:tests|inputs|data|files)/[^"\n]+)"', b.get("code") or ""):
+                rel = m.group(1)
+                dst = os.path.join(WORK, rel)
+                if not os.path.exists(dst):
+                    try:
+                        content, _ = cookbook.fetch_cached(rel)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        with open(dst, "w", encoding="utf-8") as fh:
+                            fh.write(content)
+                    except Exception:
+                        pass  # 拉取失败就让配方自己报错
+            res = run_scratch(b.get("code") or "", filename=f"cookbook_{rid}.zig",
+                              cwd=WORK)  # 配方相对路径(如 tests/xx.txt)以 work/runs 为根
+            res["cookbook"] = True
+            return self._send(200, json.dumps(res))
+        if self.path == "/api/cookbook/done":
+            b = self._json_body()
+            rid = b.get("id") or ""
+            progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
+            if b.get("done"):
+                progress[rid] = True
+            else:
+                progress.pop(rid, None)
+            save_json(os.path.join(ROOT, "work", "cookbook_progress.json"), progress)
+            return self._send(200, json.dumps({"ok": True}))
         if self.path == "/api/translate":
             b = self._json_body()
             texts = b.get("texts") or []
@@ -523,19 +581,38 @@ class Handler(BaseHTTPRequestHandler):
         req = urllib.request.Request(
             base + "/chat/completions",
             data=json.dumps({"model": model, "messages": b.get("messages", []),
-                             "stream": False}).encode(),
+                             "stream": True}).encode(),
             headers={"Content-Type": "application/json",
-                     "Authorization": "Bearer " + key})
+                     "Authorization": "Bearer " + key,
+                     "Accept": "text/event-stream"})
+        # 流式透传：上游开始吐字后不会再读超时；首字节前的等待上限 180s
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
-                data = json.load(r)
-            msg = data["choices"][0]["message"]
-            return self._send(200, json.dumps({"reply": msg.get("content", "")}))
+            up = urllib.request.urlopen(req, timeout=180)
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:500]
             return self._send(502, json.dumps({"error": f"上游 API 错误 {e.code}: {detail}"}))
         except Exception as e:
             return self._send(502, json.dumps({"error": f"请求失败: {e}"}))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            for raw in up:
+                line = raw.strip()
+                if not line:
+                    continue
+                self.wfile.write(line + b"\n\n")
+                self.wfile.flush()
+        except Exception as e:
+            try:  # 中途断流时把错误推给前端再结束
+                self.wfile.write(b'data: {"error": "stream broken"}\n\n')
+                self.wfile.flush()
+            except Exception:
+                pass
+        finally:
+            up.close()
 
 
 SCRATCH_FILE = "scratch.zig"
@@ -548,15 +625,16 @@ pub fn main() void {
 """
 
 
-def run_scratch(code):
+def run_scratch(code, filename=SCRATCH_FILE, cwd=None):
     """自由实验：编译+运行，不判题，退出码 0 即通过。"""
-    path = os.path.join(WORK, SCRATCH_FILE)
+    path = os.path.join(WORK, filename)
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(code)
         try:
             p = subprocess.run([zig_exe(), "run", path], capture_output=True,
-                               text=True, timeout=RUN_TIMEOUT, env=ZIG_ENV, cwd=ROOT)
+                               text=True, timeout=RUN_TIMEOUT, env=ZIG_ENV,
+                               cwd=cwd or ROOT)
         except subprocess.TimeoutExpired:
             return {"passed": False, "timeout": True, "returncode": -1,
                     "stdout": "", "stderr": f"Timed out after {RUN_TIMEOUT}s.",
