@@ -40,6 +40,7 @@ async function loadExercises() {
 
 function renderList(filter = "") {
   const ul = $("#exList");
+  syncSourceSelect();
   ul.innerHTML = "";
   const f = filter.trim().toLowerCase();
   CHAPTERS.forEach((ch, ci) => {
@@ -716,23 +717,14 @@ $("#search").addEventListener("input", (e) => {
   else if (zbeMode) renderZbeList(e.target.value);
   else renderList(e.target.value);
 });
-$("#btnScratch").onclick = () => select("__scratch__").then(syncArgsInput);
+
 
 /* ---------- zig-cookbook：现场拉取 + 解析 ---------- */
 let cookbookMode = false, cookbookList = null;
 let zbeMode = false, zbeList = null, zbeSnippets = null, zbeSnippetIdx = 0;
 let zbeProgress = {};
 let zbeProgressLoaded = false;
-const btnZbe = document.createElement("button");
-btnZbe.id = "btnZbe";
-btnZbe.textContent = "📘 ZBE";
-btnZbe.title = "Zig by Example（现场拉取解析）";
-const btnCookbook = document.createElement("button");
-btnCookbook.id = "btnCookbook";
-btnCookbook.textContent = t("cookbookBtn");
-btnCookbook.title = "zig-cookbook（现场拉取解析）";
-$("#btnScratch").parentElement.insertBefore(btnZbe, $("#btnScratch"));
-$("#btnScratch").parentElement.insertBefore(btnCookbook, $("#btnZbe"));
+
 
 async function ensureCookbookList() {
   if (cookbookList) return cookbookList;
@@ -744,6 +736,7 @@ async function ensureCookbookList() {
 }
 function renderCookbookList(filter = "") {
   const ul = $("#exList");
+  syncSourceSelect();
   ul.innerHTML = "";
   let last = null;
   const f = (filter || "").trim().toLowerCase();
@@ -766,44 +759,73 @@ function renderCookbookList(filter = "") {
     ul.appendChild(li);
   }
 }
-btnCookbook.onclick = async () => {
-  if (zbeMode) { zbeMode = false; btnZbe.textContent = "📘 ZBE"; }
-  cookbookMode = !cookbookMode;
-  btnCookbook.textContent = cookbookMode ? t("cookbookBack") : t("cookbookBtn");
-  if (cookbookMode) {
-    btnCookbook.textContent = t("loading");
+
+
+
+
+/* ---------- 内容源切换（下拉） ---------- */
+const sourceSelect = $("#sourceSelect");
+function syncSourceSelect() {
+  sourceSelect.value = cookbookMode ? "cookbook" : (zbeMode ? "zbe" : (current && current.scratch && current.file === "scratch.zig" ? "scratch" : "ziglings"));
+}
+function btnLoading(on) { sourceSelect.disabled = on; }
+async function switchSource(mode) {
+  cookbookMode = (mode === "cookbook");
+  zbeMode = (mode === "zbe");
+  current = null;
+  lastResult = null;
+  challengeActive = false;
+  recipeMode = null;
+  $("#outputCard").classList.add("hidden");
+  $("#runStatus").textContent = "";
+  try {
+  if (mode === "cookbook") {
+    sourceSelect.disabled = true;
     await ensureCookbookList();
-    btnCookbook.textContent = t("cookbookBack");
-    current = null;
-    renderCookbookList();
+    sourceSelect.disabled = false;
+    renderCookbookList($("#search").value);
     $("#exTitle").textContent = "📖 zig-cookbook — " + t("cookbookSub");
     $("#lesson").textContent = t("cookbookHome");
-    editor && editor.destroy(); editor = null;
-    $("#outputCard").classList.add("hidden");
-  } else {
-    renderList($("#search").value);
-  }
-};
-
-btnZbe.onclick = async () => {
-  if (cookbookMode) { cookbookMode = false; btnCookbook.textContent = t("cookbookBtn"); }
-  await ensureZbeProgress();
-  zbeMode = !zbeMode;
-  btnZbe.textContent = zbeMode ? "↩ 练习题" : "📘 ZBE";
-  if (zbeMode) {
-    btnZbe.textContent = t("loading");
-    zbeList = await (await fetch("/api/zbe")).json();
-    btnZbe.textContent = "↩ 练习题";
-    current = null;
-    renderZbeList("");
+  } else if (mode === "zbe") {
+    sourceSelect.disabled = true;
+    await ensureZbeProgress();
+    sourceSelect.disabled = false;
+    renderZbeList($("#search").value);
     $("#exTitle").textContent = "📘 Zig by Example";
-    $("#lesson").textContent = "选择左侧示例；正文与代码运行时实时拉取自 zigbyexample.neocities.org 并本地缓存（24h）。";
-    editor && editor.destroy(); editor = null;
-    $("#outputCard").classList.add("hidden");
+    $("#lesson").textContent = t("zbeHome");
+  } else if (mode === "scratch") {
+    syncSourceSelect();
+    await select("__scratch__");
+    return;
   } else {
     renderList($("#search").value);
+    $("#exTitle").textContent = t("pickExercise");
+    $("#lesson").textContent = "";
+    $("#btnSubmit").textContent = "📤 " + t("submit");
+    const mcb = $("#btnModeChallenge"), mpg = $("#btnModePlayground");
+    if (mcb) mcb.style.display = "none";
+    if (mpg) mpg.style.display = "none";
   }
-};
+  } catch (e) {
+    // 拉取失败：回退到 ziglings 并提示
+    cookbookMode = false; zbeMode = false;
+    renderList($("#search").value);
+    $("#exTitle").textContent = "⚠ " + String(e).slice(0, 60);
+    $("#lesson").textContent = t("sourceLoadFail");
+  }
+  editor && editor.destroy(); editor = null;
+  syncSourceSelect();
+}
+sourceSelect.onchange = () => switchSource(sourceSelect.value);
+function buildSourceOptions() {
+  sourceSelect.innerHTML =
+    `<option value="ziglings">📝 ${t("srcZiglings")}</option>` +
+    `<option value="cookbook">📖 zig-cookbook</option>` +
+    `<option value="zbe">📘 Zig by Example</option>` +
+    `<option value="scratch">🧪 ${t("srcScratch")}</option>`;
+  syncSourceSelect();
+}
+buildSourceOptions();
 
 async function markZbeDone(slug, done) {
   await fetch("/api/zbe/done", {
@@ -823,6 +845,7 @@ async function ensureZbeProgress() {
 
 function renderZbeList(filter = "") {
   const ul = $("#exList");
+  syncSourceSelect();
   ul.innerHTML = "";
   const f = (filter || "").trim().toLowerCase();
   for (const p of zbeList) {
