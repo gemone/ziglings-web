@@ -187,16 +187,13 @@ def check_output(ex, p):
     got = normalize(raw)
     expected = normalize(ex["output"])
     if ex.get("timestamp"):
-        # mask the timestamp digits (both are at columns 14..24 of the line)
-        def mask(t):
-            lines = t.split("\n")
-            out = []
-            for ln in lines:
-                if len(ln) >= 24:
-                    ln = ln[:14] + "#" * 10 + ln[24:]
-                out.append(ln)
-            return "\n".join(out)
-        return (mask(got) == mask(expected)), got
+        # 与上游 elrond 一致：把实际输出第 14..24 列的数字代入期望占位符重建后比较
+        #（占位符 <timestamp> 为 11 字符，时间戳数字为 10 位）
+        lines = got.split("\n")
+        if len(lines) >= 1 and len(lines[0]) >= 24:
+            rebuilt = expected[:14] + lines[0][14:24] + expected[25:]
+            return (normalize(rebuilt) == got), got
+        return False, got
     return got == expected, got
 
 
@@ -361,142 +358,6 @@ class Handler(BaseHTTPRequestHandler):
             up.close()
 
 
-SCRATCH_FILE = "scratch.zig"
-SCRATCH_TEMPLATE = """const std = @import("std");
-
-pub fn main() void {
-    // 实验场：随便写，Ctrl+Enter 立即运行，代码自动保存
-    std.debug.print("hello, scratch!\n", .{});
-}
-"""
-
-
-def run_scratch(code, filename=SCRATCH_FILE, cwd=None, timeout=None, args=None):
-    """自由实验：编译+运行，不判题，退出码 0 即通过。args 为程序命令行参数。"""
-    timeout = timeout or RUN_TIMEOUT
-    path = os.path.join(WORK, filename)
-    extra = list(args or [])[:8]
-    for a in extra:
-        if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
-            return {"passed": False, "returncode": -1, "stdout": "", "stderr": "非法参数",
-                    "outputSeen": "", "expected": "", "scratch": True}
-    with _lock:
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(code)
-        cmd = [zig_exe(), "run", path]
-        if extra:
-            cmd += ["--"] + extra
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, env=ZIG_ENV,
-                             cwd=cwd or ROOT)
-        try:
-            out, err = p.communicate(timeout=timeout)
-            rc = p.returncode
-        except subprocess.TimeoutExpired:
-            p.kill()
-            out, err = p.communicate()  # 保留已产生的部分输出（如 "listening on ..."）
-            return {"passed": False, "timeout": True, "returncode": -1,
-                    "stdout": out, "stderr": err, "timeoutSecs": timeout,
-                    "outputSeen": (out + err).strip(), "expected": "", "scratch": True}
-    return {"passed": rc == 0, "returncode": rc,
-            "stdout": out, "stderr": err,
-            "outputSeen": (out + err).strip(),
-            "expected": "", "scratch": True}
-
-
-# ---------- cookbook 挑战模式（A 类确定性配方的模拟练习） ----------
-# 06-01(rand) 输出非确定性，已排除；空输出（断言式测试）的配方自动降级
-CHALLENGEABLE_CHAPTERS = {"01", "02", "09", "10", "11", "12", "13", "15"}
-CHALLENGE_SKELETON = """const std = @import("std");
-
-pub fn main() void {
-    // TODO: 阅读 Cookbook 讲解后，从零实现这个任务，
-    //       让程序输出与参考实现一致，然后提交挑战。
-}
-"""
-
-
-def _cookbook_expected_path(rid):
-    return os.path.join(ROOT, "work", "cache", "cookbook", f"expected_{rid}.txt")
-
-
-def _cookbook_run_code(code, timeout=None):
-    """运行 cookbook 代码（cwd=work/runs，自动准备夹具），返回结果。"""
-    timeout = timeout or 90
-    path = os.path.join(WORK, "cookbook_tmp_run.zig")
-    with _lock:
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(code)
-        try:
-            return subprocess.run([zig_exe(), "run", path], capture_output=True,
-                                  text=True, timeout=RUN_TIMEOUT, env=ZIG_ENV, cwd=WORK)
-        except subprocess.TimeoutExpired:
-            class _T:
-                returncode = -1
-                stdout = ""
-                stderr = f"Timed out after {RUN_TIMEOUT}s."
-            return _T()
-
-
-def _cookbook_ensure_fixtures(code):
-    for m in re.finditer(r'"((?:tests|inputs|data|files)/[^"\n]+)"', code):
-        rel = m.group(1)
-        if ".." in rel or rel.startswith("/"):
-            continue
-        dst = os.path.join(WORK, rel)
-        if not os.path.exists(dst):
-            try:
-                content, _ = cookbook.fetch_cached(rel)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                with open(dst, "w", encoding="utf-8") as fh:
-                    fh.write(content)
-            except Exception:
-                pass
-
-
-def _cookbook_expected(rid, ref_code):
-    """参考实现的期望输出（文件缓存；没有则现场运行参考代码捕获）。"""
-    ep = _cookbook_expected_path(rid)
-    if os.path.isfile(ep):
-        return open(ep, encoding="utf-8").read()
-    _cookbook_ensure_fixtures(ref_code)
-    p = _cookbook_run_code(ref_code)
-    if p.returncode != 0:
-        return None
-    # cookbook 配方惯用 std.debug.print（stderr），合并两路作为输出
-    expected = (p.stdout + p.stderr).strip()
-    os.makedirs(os.path.dirname(ep), exist_ok=True)
-    with open(ep, "w", encoding="utf-8") as fh:
-        fh.write(expected)
-    return expected
-
-
-
-OVERRIDES = load_json(os.path.join(ROOT, "web", "data", "cookbook_overrides.json"), {})
-
-
-def cookbook_code_for(rid, original):
-    """挑战模式使用覆盖层代码（输出可判题的变体），否则用上游原版。"""
-    ov = OVERRIDES.get(rid)
-    if ov and ov.get("code"):
-        return ov["code"]
-    return original
-
-
-def cookbook_hints(code):
-    """从参考代码提取渐进提示：函数签名 + 用到的 std 符号。"""
-    sigs = re.findall(r"(?:pub )?fn ([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)", code)
-    sig_hints = [f"fn {name}({params.strip()[:60]}{'…' if len(params.strip()) > 60 else ''})"
-                 for name, params in sigs if name != "main"][:4]
-    syms = []
-    for m in re.finditer(r"std\.[A-Za-z_][A-Za-z0-9_.]*", code):
-        s2 = ".".join(m.group(0).split(".")[:3])
-        if s2 not in syms:
-            syms.append(s2)
-        if len(syms) >= 6:
-            break
-    return {"signatures": sig_hints, "stdSymbols": syms}
-
     def log_message(self, fmt, *args):
         pass
 
@@ -574,6 +435,14 @@ def cookbook_hints(code):
                 out.append({**e, "done": bool(progress.get(e["file"])),
                             "hasCode": code is not None})
             return self._send(200, json.dumps(out))
+        if self.path.startswith("/api/exercise/playground_"):
+            f = os.path.basename(self.path)
+            code = self._user_code(f) or ""
+            return self._send(200, json.dumps({
+                "file": f, "code": code, "original": "",
+                "uri": "file://" + os.path.join(WORK, f),
+                "rootUri": "file://" + WORK, "scratch": True,
+            }))
         if self.path.startswith("/api/exercise/"):
             f = os.path.basename(self.path)
             if f == SCRATCH_FILE:
@@ -739,7 +608,7 @@ def cookbook_hints(code):
         if self.path == "/api/lint":
             b = self._json_body()
             f = b.get("file") or ""
-            if f not in BY_FILE:
+            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith(("cookbook_", "playground_", "zbe_")):
                 return self._send(400, json.dumps({"error": "unknown exercise"}))
             return self._send(200, json.dumps({"diagnostics": zig_lint(f, b.get("code") or "")}))
         if self.path == "/api/env/select":
@@ -885,6 +754,142 @@ def cookbook_hints(code):
         self.end_headers()
         self.wfile.write(body)
 
+
+SCRATCH_FILE = "scratch.zig"
+SCRATCH_TEMPLATE = """const std = @import("std");
+
+pub fn main() void {
+    // 实验场：随便写，Ctrl+Enter 立即运行，代码自动保存
+    std.debug.print("hello, scratch!\n", .{});
+}
+"""
+
+
+def run_scratch(code, filename=SCRATCH_FILE, cwd=None, timeout=None, args=None):
+    """自由实验：编译+运行，不判题，退出码 0 即通过。args 为程序命令行参数。"""
+    timeout = timeout or RUN_TIMEOUT
+    path = os.path.join(WORK, filename)
+    extra = list(args or [])[:8]
+    for a in extra:
+        if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
+            return {"passed": False, "returncode": -1, "stdout": "", "stderr": "非法参数",
+                    "outputSeen": "", "expected": "", "scratch": True}
+    with _lock:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(code)
+        cmd = [zig_exe(), "run", path]
+        if extra:
+            cmd += ["--"] + extra
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=ZIG_ENV,
+                             cwd=cwd or ROOT)
+        try:
+            out, err = p.communicate(timeout=timeout)
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()  # 保留已产生的部分输出（如 "listening on ..."）
+            return {"passed": False, "timeout": True, "returncode": -1,
+                    "stdout": out, "stderr": err, "timeoutSecs": timeout,
+                    "outputSeen": (out + err).strip(), "expected": "", "scratch": True}
+    return {"passed": rc == 0, "returncode": rc,
+            "stdout": out, "stderr": err,
+            "outputSeen": (out + err).strip(),
+            "expected": "", "scratch": True}
+
+
+# ---------- cookbook 挑战模式（A 类确定性配方的模拟练习） ----------
+# 06-01(rand) 输出非确定性，已排除；空输出（断言式测试）的配方自动降级
+CHALLENGEABLE_CHAPTERS = {"01", "02", "09", "10", "11", "12", "13", "15"}
+CHALLENGE_SKELETON = """const std = @import("std");
+
+pub fn main() void {
+    // TODO: 阅读 Cookbook 讲解后，从零实现这个任务，
+    //       让程序输出与参考实现一致，然后提交挑战。
+}
+"""
+
+
+def _cookbook_expected_path(rid):
+    return os.path.join(ROOT, "work", "cache", "cookbook", f"expected_{rid}.txt")
+
+
+def _cookbook_run_code(code, timeout=None):
+    """运行 cookbook 代码（cwd=work/runs，自动准备夹具），返回结果。"""
+    timeout = timeout or 90
+    path = os.path.join(WORK, "cookbook_tmp_run.zig")
+    with _lock:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(code)
+        try:
+            return subprocess.run([zig_exe(), "run", path], capture_output=True,
+                                  text=True, timeout=RUN_TIMEOUT, env=ZIG_ENV, cwd=WORK)
+        except subprocess.TimeoutExpired:
+            class _T:
+                returncode = -1
+                stdout = ""
+                stderr = f"Timed out after {RUN_TIMEOUT}s."
+            return _T()
+
+
+def _cookbook_ensure_fixtures(code):
+    for m in re.finditer(r'"((?:tests|inputs|data|files)/[^"\n]+)"', code):
+        rel = m.group(1)
+        if ".." in rel or rel.startswith("/"):
+            continue
+        dst = os.path.join(WORK, rel)
+        if not os.path.exists(dst):
+            try:
+                content, _ = cookbook.fetch_cached(rel)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+            except Exception:
+                pass
+
+
+def _cookbook_expected(rid, ref_code):
+    """参考实现的期望输出（文件缓存；没有则现场运行参考代码捕获）。"""
+    ep = _cookbook_expected_path(rid)
+    if os.path.isfile(ep):
+        return open(ep, encoding="utf-8").read()
+    _cookbook_ensure_fixtures(ref_code)
+    p = _cookbook_run_code(ref_code)
+    if p.returncode != 0:
+        return None
+    # cookbook 配方惯用 std.debug.print（stderr），合并两路作为输出
+    expected = (p.stdout + p.stderr).strip()
+    os.makedirs(os.path.dirname(ep), exist_ok=True)
+    with open(ep, "w", encoding="utf-8") as fh:
+        fh.write(expected)
+    return expected
+
+
+
+OVERRIDES = load_json(os.path.join(ROOT, "web", "data", "cookbook_overrides.json"), {})
+
+
+def cookbook_code_for(rid, original):
+    """挑战模式使用覆盖层代码（输出可判题的变体），否则用上游原版。"""
+    ov = OVERRIDES.get(rid)
+    if ov and ov.get("code"):
+        return ov["code"]
+    return original
+
+
+def cookbook_hints(code):
+    """从参考代码提取渐进提示：函数签名 + 用到的 std 符号。"""
+    sigs = re.findall(r"(?:pub )?fn ([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)", code)
+    sig_hints = [f"fn {name}({params.strip()[:60]}{'…' if len(params.strip()) > 60 else ''})"
+                 for name, params in sigs if name != "main"][:4]
+    syms = []
+    for m in re.finditer(r"std\.[A-Za-z_][A-Za-z0-9_.]*", code):
+        s2 = ".".join(m.group(0).split(".")[:3])
+        if s2 not in syms:
+            syms.append(s2)
+        if len(syms) >= 6:
+            break
+    return {"signatures": sig_hints, "stdSymbols": syms}
 
 # ---------- 后台运行任务（支持同时跑服务器+客户端） ----------
 BGRUNS = {}   # runId -> {"p":Popen,"out":[],"lock":Lock,"done":bool,"rc":None,"file":str,"thread":...}
