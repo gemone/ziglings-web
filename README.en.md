@@ -1,63 +1,85 @@
 # Ziglings Web — Guided Zig Learning in the Browser
 
-> 中文文档见 [README.md](README.md)。
+[中文文档](README.md)
 
 A local web environment built on the [Ziglings](https://codeberg.org/ziglings/exercises/)
-exercise collection: read the exercise → fix the code in the browser → compile & run →
-automatic judging → AI tutor → std library references.
+exercise collection — a complete learning loop in one page:
+
+> read the exercise → look things up in **embedded, translatable docs** →
+> edit in CodeMirror 6 → trial run → submit for judging → unlock chapters →
+> ask the per-exercise AI tutor when stuck
 
 ## Quick start
 
 ```bash
-python3 server.py          # requires zig on PATH (0.16.x verified); auto-installs nothing else
+npm install && npm run build   # build the frontend (first time)
+python3 server.py              # requires zig on PATH (0.16.x verified)
 # open http://127.0.0.1:8123
 ```
 
-Environment variables: `PORT` (default 8123), `ZIG_EXE` (default `zig`),
-`ZLS_EXE` (default `zls`), `NO_SYNC=1` (skip content auto-init).
-
-On first start the server **pulls the upstream ziglings repo** (`ziglings/`) and
-generates the exercise metadata (`web/data/exercises.json`) automatically.
+On first start the server automatically clones the ziglings repo from codeberg
+and generates the exercise metadata (`NO_SYNC=1` skips this).
+Environment variables: `PORT` (default 8123), `ZIG_EXE` / `ZLS_EXE`.
 
 ## Features
 
-- **CodeMirror 6 editor** — Zig syntax highlighting, line numbers, auto indent /
-  bracket closing, search, folding; `Ctrl+Enter` runs the exercise.
-- **ZLS language server** — the server bridges the browser to a local `zls`
-  process over WebSocket (`lsp_bridge.py`), enabling completions and hover where
-  ZLS works; an independent `/api/lint` (`zig ast-check`) provides real-time
-  syntax squiggles regardless.
-- **Run & Submit** — “Run” is a trial (no progress); “Submit” re-judges on the
-  server (`zig run`, compared line-by-line against the official expected output)
-  and only then records progress (`work/progress.json`) and a submission snapshot
-  (`work/submissions.json`).
-- **11-chapter ladder** — exercises are grouped into 11 chapters; finish one to
-  unlock the next. A “free mode” toggle removes gating.
-- **116 official exercises** — metadata extracted from upstream
-  `rivendell/elrond.zig` by `tools/extract_exercises.py`. Sync upstream with
-  `tools/sync.sh` (`git pull` + re-extract); progress is keyed by file name and
-  survives updates.
-- **Zig version switcher** — Settings ⚙ lists installed toolchains (zvm layout
-  `~/.zvm/<version>` plus PATH). Selecting a version checks out the matching
-  upstream ziglings tag (`v0.16.0` for Zig 0.16.x, etc.), re-extracts metadata,
-  and repoints the judge/linter at that toolchain.
-- **AI tutor** — chat panel with per-exercise persisted history
-  (browser localStorage), automatic context (exercise, your code, last compiler
-  errors), markdown rendering, “explain this error” one-click. Works with any
-  **OpenAI-compatible endpoint** (⚙ dialog: Base URL / API Key / model), stored
-  locally in `work/ai_config.json`.
-- **References** — per-exercise topic cheat sheets plus links to the Zig
-  language reference, std docs and Zig Learn.
-- **i18n** — Chinese / English UI, toggle with the 🌐 button (top right).
+### Learning loop
+
+- **Run vs Submit** — “Run” is a trial with no effect on progress; “📤 Submit”
+  re-judges on the server (`zig run`, compared line-by-line against the official
+  expected output, including stdout-mode, timestamp placeholder and skip flags)
+  and only then records progress and a submission snapshot.
+- **11-chapter ladder** — finish a chapter to unlock the next; per-chapter
+  progress bars plus a free-mode toggle.
+- **🧪 Scratchpad** — run any Zig code instantly, no judging; drafts auto-save
+  and lint/ZLS/AI tutor all work there too.
+
+### Editor & language services
+
+- **CodeMirror 6** — Zig syntax highlighting (Catppuccin theme), line numbers,
+  bracket closing, search, folding; `Ctrl+Enter` runs.
+- **ZLS integration** — the server bridges the browser to a local zls over
+  WebSocket (completions, hover).
+- **Real-time lint** — `zig ast-check` diagnostics that work without ZLS.
+- **Draggable splitters** — sidebar width, AI panel width and lesson height are
+  all adjustable and persisted.
+
+### AI tutor & docs
+
+- **Per-exercise AI chat** — history persisted in localStorage; prompts carry
+  the exercise, your code and the last compiler output; markdown rendering with
+  copy buttons on code blocks.
+- **Lesson translation** — 🌐 translates the exercise notes on demand
+  (cached per exercise), ↺ switches back to the original.
+- **Embedded docs + AI translation** — std library and the language reference
+  render inside the Ref tab; the viewport is translated lazily as you scroll
+  (code samples stay untouched).
+- **Exercise ↔ docs association** — each exercise lists matching language
+  reference sections plus direct links to every `std.*` symbol actually used in
+  its source code.
+
+### Misc
+
+- Chinese / English UI (🌐 toggle), Catppuccin Mocha theme, custom scrollbars,
+  auto-collapsing AI panel on narrow screens.
+
+## Zig version switcher
+
+The ⚙ settings dialog lists installed toolchains (scans `~/.zvm/<version>` and
+PATH). Selecting a version makes the server:
+
+1. check out the **matching upstream ziglings tag** (Zig 0.16.x → `v0.16.0`);
+2. re-extract that version's exercise metadata;
+3. repoint the judge/linter and zls config at the selected toolchain.
 
 ## Where data lives
 
 | Data | Location |
 |---|---|
-| Exercise sources | `ziglings/exercises/*.zig` (upstream repo, read-only) |
+| Exercise sources | `ziglings/exercises/*.zig` (upstream, read-only) |
 | Exercise metadata | `web/data/exercises.json` (generated) |
-| Your code drafts & judge input | `work/runs/<exercise>.zig` |
-| Progress | `work/progress.json` |
+| Code drafts | `work/runs/<exercise>.zig` |
+| Progress | `work/progress.json` (written only by Submit) |
 | Submissions | `work/submissions.json` |
 | AI config | `work/ai_config.json` |
 | Zig toolchain choice | `work/config.json` |
@@ -66,24 +88,32 @@ generates the exercise metadata (`web/data/exercises.json`) automatically.
 
 ## Frontend build
 
-Sources live in `src/` (CodeMirror 6 + a small Zig StreamLanguage + LSP client),
-bundled with esbuild into `web/dist/bundle.js`:
+Sources live in `src/`, bundled by esbuild into `web/dist/bundle.js`
+(gitignored — build after cloning):
+
+```
+src/main.js       app logic: ladder, judging UI, chat, scratchpad
+src/editor.js     CodeMirror 6 assembly (theme, keymaps, ZLS extension)
+src/zig.js        Zig StreamLanguage syntax
+src/transport.js  LSP WebSocket transport
+src/i18n.js       zh/en dictionaries
+```
+
+## Syncing upstream
 
 ```bash
-npm install
-npm run build
+tools/sync.sh    # ziglings git pull + regenerate exercises.json
 ```
+
+Progress is keyed by file name and survives updates. Delete `ziglings/` and
+`web/data/exercises.json` to re-initialize from scratch on next start.
 
 ## Compatibility
 
-- Upstream ziglings `main` targets Zig 0.17-dev; the version switcher checks out
-  the matching release tag instead (verified: 109/116 exercises run on Zig 0.16.0
-  at tag `v0.16.0`).
-- Exercises 96/97 (`@cImport`) are skipped upstream; shown greyed out.
-- Exercise 105 (`zig test`) judging may differ slightly from the CLI experience.
-
-## Roadmap / possible next steps
-
-- Server-side chat persistence (`work/chats/`) instead of localStorage
-- Automatic upstream sync on schedule or on server start (`AUTO_SYNC`)
-- More UI languages (the dictionaries live in `src/i18n.js`)
+- Upstream `main` targets Zig 0.17-dev; use the version switcher to check out
+  `v0.16.0` — 109/116 exercises run on Zig 0.16.0.
+- Exercises 96/97 (`@cImport`) are skipped upstream; exercise 105 (`zig test`)
+  judges slightly differently than the CLI.
+- The std docs are a WASM+SPA; the first embedded load downloads a ~16 MB
+  sources.tar, and its own re-rendering can overwrite some AI translations —
+  the (static) language reference is the better reading experience.
