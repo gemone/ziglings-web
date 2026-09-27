@@ -266,3 +266,7 @@ dialog input { width: 100%; margin-top: 4px; }
 @keyframes pulse { 50% { opacity: .4; } }
 .bg-chip button { background: none; border: none; padding: 0 2px; color: var(--muted); font-size: .8rem; }
 .bg-chip button:hover { color: var(--err); }
+
+/* Cookbook 模式切换按钮 */
+@keyframes shake { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
+button.shake { animation: shake .3s; color: var(--err); }

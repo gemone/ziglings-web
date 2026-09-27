@@ -404,7 +404,7 @@ function showResult(res, submitted) {
 
 async function submit() {
   if (!current) return;
-  if (current.id && current.file.startsWith("cookbook_")) { await submitChallenge(); return; }
+  if (recipeMode === "challenge") { await submitChallenge(); return; }
   $("#runStatus").textContent = t("submitting"); $("#runStatus").className = "";
   const res = await (await fetch("/api/submit", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -792,70 +792,104 @@ async function selectRecipe(id) {
   const ab = $("#argsInput");
   if (ab) ab.value = "";
   renderCookbookStdLinks();
-  setupCookbookButtons(id);
+  setupRecipeModes(id);
   if (editor) editor.view.focus();
 }
 
-/* 挑战模式 / Playground 按钮（按可判题性动态生成） */
-let challengeActive = false;
-function setupCookbookButtons(id) {
-  $("#btnSubmit").style.display = "none";
-  $("#btnHint").style.display = "none";
-  let btn = $("#btnChallenge");
-  if (!btn) {
-    btn = document.createElement("button");
-    btn.id = "btnChallenge";
-    $("#runRow").insertBefore(btn, $("#btnExplain"));
+/* ---------- Cookbook 双模式：挑战 ↔ Playground 随时切换 ---------- */
+let recipeMode = null; // "challenge" | "playground" | null
+
+function setRecipeButtons(challengeable) {
+  const cb = $("#btnModeChallenge"), pg = $("#btnModePlayground");
+  cb.style.display = challengeable ? "" : "none";
+  pg.style.display = "";
+  syncModeButtons();
+}
+function syncModeButtons() {
+  const cb = $("#btnModeChallenge"), pg = $("#btnModePlayground");
+  if (!cb || !pg) return;
+  cb.classList.toggle("primary", recipeMode === "challenge");
+  pg.classList.toggle("primary", recipeMode === "playground");
+  // 提交按钮只在挑战模式显示
+  $("#btnSubmit").style.display = recipeMode === "challenge" ? "" : "none";
+}
+function enterChallengeMode() {
+  if (!current) return;
+  recipeMode = "challenge";
+  editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length,
+    insert: current.skeleton || "" } });
+  syncModeButtons();
+  $("#btnSubmit").disabled = false;
+  $("#outputCard").classList.add("hidden");
+  $("#runStatus").textContent = "🎯 " + t("challengeModeOn");
+  $("#runStatus").className = "";
+  $("#lesson").innerHTML = renderMd(`### 🎯 ${t("challengeTitle")}：${current.title}${ESC}${ESC}${t("challengeGoal")}` +
+    (current.note ? `${ESC}${ESC}📝 ${t("challengeNote")}：${current.note}` : "") +
+    `${ESC}${ESC}${t("challengeHintTip")}`);
+}
+function enterPlaygroundMode() {
+  if (!current) return;
+  recipeMode = "playground";
+  // 恢复该配方的 Playground 草稿（没有则用参考实现）
+  const draft = localStorage.getItem("pg:playground_" + current.id + ".zig");
+  const code = draft || current.original || "";
+  editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: code } });
+  syncModeButtons();
+  $("#outputCard").classList.add("hidden");
+  $("#runStatus").textContent = "🧪 " + t("playgroundStarted");
+  $("#runStatus").className = "";
+  $("#lesson").innerHTML = renderMd(`### 🧪 ${t("playgroundTitle")}：${current.title}${ESC}${ESC}` +
+    `${draft ? t("playgroundDraftRestored") : t("playgroundRefLoaded")}${ESC}${ESC}${t("playgroundFreeTip")}`);
+}
+function setupRecipeModes(id) {
+  recipeMode = null;
+  let cb = $("#btnModeChallenge"), pg = $("#btnModePlayground");
+  if (!cb) {
+    cb = document.createElement("button");
+    cb.id = "btnModeChallenge";
+    pg = document.createElement("button");
+    pg.id = "btnModePlayground";
+    $("#runRow").insertBefore(pg, $("#btnExplain"));
+    $("#runRow").insertBefore(cb, pg);
   }
-  btn.disabled = true;
-  btn.textContent = "⏳ " + t("checking");
-  btn.onclick = async () => { await startChallenge(id); };
+  cb.textContent = "🎯 " + t("challengeMode");
+  pg.textContent = "🧪 Playground";
+  cb.disabled = true; pg.disabled = true;
+  cb.title = ""; pg.title = "";
   (async () => {
     try {
       const info = await (await fetch(`/api/cookbook/challenge/${id}?lang=${getLang() === "en" ? "en-US" : "zh-CN"}`)).json();
+      current.expected = info.expected;
+      current.skeleton = info.skeleton;
+      current.note = info.note;
+      cb.disabled = false; pg.disabled = false;
       if (info.challengeable) {
-        current.expected = info.expected;
-        current.skeleton = info.skeleton;
-        btn.textContent = "🎯 " + t("challengeMode");
-        btn.disabled = false;
-        btn.title = t("challengeTip");
+        cb.onclick = () => enterChallengeMode();
+        cb.title = t("challengeTip");
+        pg.onclick = () => enterPlaygroundMode();
+        pg.title = t("playgroundTip");
+        enterChallengeMode(); // 默认进入挑战模式
       } else {
-        btn.textContent = "🧪 " + t("playgroundOpen");
-        btn.disabled = false;
-        btn.title = t("playgroundTip");
-        btn.onclick = () => openPlayground(id);
+        cb.onclick = () => {
+          cb.title = t("notJudgeable");
+          cb.classList.add("shake");
+          setTimeout(() => cb.classList.remove("shake"), 500);
+        };
+        cb.title = t("notJudgeable");
+        pg.onclick = () => enterPlaygroundMode();
+        pg.title = t("playgroundTip");
+        enterPlaygroundMode(); // 不可判题：默认 Playground
       }
     } catch (e) {
-      btn.textContent = "🧪 " + t("playgroundOpen");
-      btn.disabled = false;
-      btn.onclick = () => openPlayground(id);
+      cb.disabled = true;
+      pg.disabled = false;
+      pg.onclick = () => enterPlaygroundMode();
+      enterPlaygroundMode();
     }
   })();
 }
 
-async function startChallenge(id) {
-  challengeActive = true;
-  editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: current.skeleton || "" } });
-  $("#btnSubmit").style.display = "";
-  $("#btnSubmit").textContent = "📤 " + t("submitChallenge");
-  $("#btnSubmit").disabled = false;
-  $("#runStatus").textContent = t("challengeStarted");
-  $("#runStatus").className = "";
-  addMsg("assistant", t("challengeChatIntro"));
-}
-
-function openPlayground(id) {
-  challengeActive = false;
-  const file = "playground_" + id + ".zig";
-  current.file = file;
-  const saved = localStorage.getItem("pg:" + file);
-  if (saved) editor.view.dispatch({ changes: { from: 0, to: editor.view.state.doc.length, insert: saved } });
-  $("#runStatus").textContent = t("playgroundStarted");
-  $("#runStatus").className = "";
-  $("#btnSubmit").style.display = "none";
-  addMsg("assistant", t("playgroundChatIntro"));
-}
-
+/* 挑战模式 / Playground 按钮（按可判题性动态生成） */
 async function submitChallenge() {
   $("#runStatus").textContent = t("submitting"); $("#runStatus").className = "";
   const res = await (await fetch("/api/cookbook/judge", {
