@@ -112,6 +112,12 @@ async function select(file) {
   if (argsBoxReset) argsBoxReset.value = "";
   $("#btnSubmit").style.display = current.scratch ? "none" : "";
   $("#btnHint").style.display = current.scratch ? "none" : "";
+  // ziglings / 实验场不显示 Cookbook 的挑战/Playground 模式按钮
+  const mcb = $("#btnModeChallenge"), mpg = $("#btnModePlayground");
+  if (mcb) mcb.style.display = "none";
+  if (mpg) mpg.style.display = "none";
+  if (!current.scratch) $("#btnSubmit").textContent = t("submit");
+  recipeMode = null;
   renderList($("#search").value);
   if (location.hash !== "#" + file) history.replaceState(null, "", "#" + file);
 }
@@ -854,6 +860,7 @@ function setupRecipeModes(id) {
   }
   cb.textContent = "🎯 " + t("challengeMode");
   pg.textContent = "🧪 Playground";
+  cb.style.display = ""; pg.style.display = "";
   cb.disabled = true; pg.disabled = true;
   cb.title = ""; pg.title = "";
   (async () => {
