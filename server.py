@@ -323,21 +323,30 @@ class Handler(BaseHTTPRequestHandler):
             lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
             if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
                 return self._send(400, json.dumps({"error": "bad id"}))
-            challengeable = rid[:2] in CHALLENGEABLE_CHAPTERS
+            has_override = rid in OVERRIDES and OVERRIDES[rid].get("code")
+            challengeable = has_override or rid[:2] in CHALLENGEABLE_CHAPTERS
             expected = None
-            if challengeable:
-                try:
-                    r = cookbook.get_recipe(rid, lang)
-                    expected = _cookbook_expected(rid, r["code"])
-                except Exception as e:
-                    return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
-                if expected is None or not expected.strip():
-                    # 参考实现跑不通（依赖缺失）或无可见输出（断言式测试）→ 不适合判题
-                    challengeable = False
+            note = None
+            hints = None
+            try:
+                r = cookbook.get_recipe(rid, lang)
+                ref_code = cookbook_code_for(rid, r["code"])
+                if has_override:
+                    note = OVERRIDES[rid].get("note")
+                if challengeable:
+                    expected = _cookbook_expected(rid, ref_code)
+                    hints = cookbook_hints(ref_code)
+            except Exception as e:
+                return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
+            if expected is None or not expected.strip():
+                # 参考实现跑不通（依赖缺失）或无可见输出（断言式测试）→ 不适合判题
+                challengeable = False
             return self._send(200, json.dumps({
                 "challengeable": challengeable,
                 "expected": expected,
                 "skeleton": CHALLENGE_SKELETON,
+                "note": note,
+                "hints": hints,
             }))
         if self.path == "/api/cookbook/progress":
             progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
@@ -469,7 +478,8 @@ class Handler(BaseHTTPRequestHandler):
                 r = cookbook.get_recipe(rid, b.get("lang") or "zh-CN")
             except Exception as e:
                 return self._send(502, json.dumps({"error": f"拉取失败: {e}"}))
-            expected = _cookbook_expected(rid, r["code"])
+            ref_code = cookbook_code_for(rid, r["code"])
+            expected = _cookbook_expected(rid, ref_code)
             if expected is None:
                 return self._send(200, json.dumps({"passed": False,
                     "stderr": "该配方无法自动判题（参考实现运行失败）", "stdout": ""}))
@@ -481,6 +491,7 @@ class Handler(BaseHTTPRequestHandler):
                 "passed": passed, "returncode": p.returncode,
                 "stdout": p.stdout, "stderr": p.stderr,
                 "outputSeen": seen, "expected": expected, "judged": True,
+                "hints": cookbook_hints(ref_code),
             }))
         if self.path == "/api/cookbook/done":
             b = self._json_body()
@@ -866,6 +877,33 @@ def _cookbook_expected(rid, ref_code):
     with open(ep, "w", encoding="utf-8") as fh:
         fh.write(expected)
     return expected
+
+
+
+OVERRIDES = load_json(os.path.join(ROOT, "web", "data", "cookbook_overrides.json"), {})
+
+
+def cookbook_code_for(rid, original):
+    """挑战模式使用覆盖层代码（输出可判题的变体），否则用上游原版。"""
+    ov = OVERRIDES.get(rid)
+    if ov and ov.get("code"):
+        return ov["code"]
+    return original
+
+
+def cookbook_hints(code):
+    """从参考代码提取渐进提示：函数签名 + 用到的 std 符号。"""
+    sigs = re.findall(r"(?:pub )?fn ([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)", code)
+    sig_hints = [f"fn {name}({params.strip()[:60]}{'…' if len(params.strip()) > 60 else ''})"
+                 for name, params in sigs if name != "main"][:4]
+    syms = []
+    for m in re.finditer(r"std\.[A-Za-z_][A-Za-z0-9_.]*", code):
+        s2 = ".".join(m.group(0).split(".")[:3])
+        if s2 not in syms:
+            syms.append(s2)
+        if len(syms) >= 6:
+            break
+    return {"signatures": sig_hints, "stdSymbols": syms}
 
 
 def init_content():

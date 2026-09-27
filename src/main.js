@@ -1,6 +1,7 @@
 /* Ziglings Web — guided learning app (CodeMirror 6 + ZLS) */
 import { createEditor } from "./editor.js";
 import { t, setLang, getLang, applyStatic } from "./i18n.js";
+const ESC = "\n";  // 模板字符串换行（历史命名，用于 innerHTML 拼接）
 
 const $ = (s) => document.querySelector(s);
 let exercises = [], current = null, lastResult = null, editor = null;
@@ -397,7 +398,6 @@ function showResult(res, submitted) {
       (res.stderr ? `<span class="err">${escapeHtml(res.stderr)}</span>\n` : "") +
       `<span class="exp">${escapeHtml(t("expected"))}${escapeHtml(res.expected)}</span>\n` +
       `<span>${escapeHtml(t("actual"))}${escapeHtml(res.outputSeen || res.stdout || "(空)")}</span>`;
-    if (submitted) $("#btnSubmit").disabled = true;
   }
   out.scrollTop = 0;
 }
@@ -703,7 +703,9 @@ $("#btnReset").onclick = async () => {
     saveDraft();
   }
 };
-$("#search").addEventListener("input", (e) => renderList(e.target.value));
+$("#search").addEventListener("input", (e) => {
+  if (cookbookMode) renderCookbookList(e.target.value); else renderList(e.target.value);
+});
 $("#btnScratch").onclick = () => select("__scratch__").then(syncArgsInput);
 
 /* ---------- zig-cookbook：现场拉取 + 解析 ---------- */
@@ -722,11 +724,13 @@ async function ensureCookbookList() {
   cookbookList = list;
   return cookbookList;
 }
-function renderCookbookList() {
+function renderCookbookList(filter = "") {
   const ul = $("#exList");
   ul.innerHTML = "";
   let last = null;
+  const f = (filter || "").trim().toLowerCase();
   for (const r of cookbookList) {
+    if (f && !(r.title.toLowerCase().includes(f) || r.id.includes(f) || r.chapterName.toLowerCase().includes(f))) continue;
     if (r.chapter !== last) {
       last = r.chapter;
       const head = document.createElement("li");
@@ -770,7 +774,14 @@ async function selectRecipe(id) {
               output: "", hint: null, skip: false, scratch: true,
               original: res.original, uri: res.uri, rootUri: res.rootUri, prose: res.prose };
   mountEditor(res.code);
-  $("#lesson").innerHTML = renderMd(`### ${res.title}\n\n${res.prose}\n\n> Cookbook 示例：直接运行参考实现，修改后 Ctrl+Enter 立即看结果。`);
+  let lessonHtml = renderMd(`### ${res.title}\n\n${res.prose}\n\n> Cookbook 示例：直接运行参考实现，修改后 Ctrl+Enter 立即看结果。`);
+  const steps = cookbookSteps(res.id);
+  if (steps) {
+    lessonHtml += `\n<div class="card" style="margin:8px 0 0"><div class="card-head"><span>📋 ${t("taskCard")}</span></div>` +
+      `<ol style="margin:4px 0 0; padding-left:1.4em; font-size:.86rem;">` +
+      steps.map(s2 => `<li style="margin:.2em 0">${escapeHtml(s2)}</li>`).join("") + `</ol></div>`;
+  }
+  $("#lesson").innerHTML = lessonHtml;
   $("#outputCard").classList.add("hidden");
   $("#runStatus").textContent = "";
   $("#btnSubmit").style.display = "none";
@@ -854,23 +865,51 @@ async function submitChallenge() {
   lastResult = res;
   $("#outputCard").classList.remove("hidden");
   const out = $("#output");
+  if (res.error) {
+    $("#runStatus").textContent = "⚠ " + res.error.slice(0, 60);
+    $("#runStatus").className = "err";
+    out.innerHTML = `<span class="err">${escapeHtml(res.error)}</span>`;
+    return;
+  }
   if (res.passed) {
     $("#runStatus").textContent = "🎯 " + t("challengePassed");
     $("#runStatus").className = "ok";
-    out.innerHTML = `<span class="ok">${escapeHtml(res.outputSeen)}</span>\n\n<span class="ok">🎉 ${t("challengePassedMsg")}</span>`;
+    out.innerHTML = `<span class="ok">${escapeHtml(res.outputSeen)}</span>${ESC}${ESC}<span class="ok">🎉 ${t("challengePassedMsg")}</span>`;
     markCookbookDone(current.id, true);
   } else {
     $("#runStatus").textContent = t("outputMismatch");
     $("#runStatus").className = "err";
+    let hintHtml = "";
+    const h = res.hints;
+    if (h && ((h.signatures && h.signatures.length) || (h.stdSymbols && h.stdSymbols.length))) {
+      const items = [
+        ...(h.signatures || []).map(s2 => `签名：${s2}`),
+        ...(h.stdSymbols || []).map(s2 => `可能用到的 API：${s2}`),
+      ];
+      hintHtml = `<details class="cheat" style="margin-top:8px"><summary>💡 ${t("progressiveHint")}</summary>` +
+        items.map(x => `<div>· ${escapeHtml(x)}</div>`).join("") + `</details>`;
+    }
     out.innerHTML =
-      (res.stderr ? `<span class="err">${escapeHtml(res.stderr)}</span>\n` : "") +
-      `<span class="exp">${escapeHtml(t("expected"))}${escapeHtml(res.expected)}</span>\n` +
-      `<span>${escapeHtml(t("actual"))}${escapeHtml(res.outputSeen || "(空)")}</span>`;
+      (res.stderr ? `<span class="err">${escapeHtml(res.stderr)}</span>${ESC}` : "") +
+      `<span class="exp">${escapeHtml(t("expected"))}${escapeHtml(res.expected)}</span>${ESC}` +
+      `<span>${escapeHtml(t("actual"))}${escapeHtml(res.outputSeen || res.stdout || "(空)")}</span>` +
+      hintHtml;
   }
   out.scrollTop = 0;
 }
 function renderListSearchSafe() {
   if (cookbookMode) renderCookbookList(); else renderList($("#search").value);
+}
+
+const CHAPTER_STEPS = {
+  "04": ["运行 TCP 服务器，记下输出里的监听端口", "把 TCP 客户端的端口改成同样的值（或填进程序参数框）", "运行客户端，观察两边的收发日志", "进阶：把服务器改成支持多客户端（配合 07 线程章节）"],
+  "05": ["运行 HTTP 示例，观察请求/输出", "修改 URL 或请求体再运行", "进阶：给服务端加一个自定义响应头"],
+  "14": ["该章需要本地 C 库与数据库服务（参考上游 docker-compose.yml）", "若环境不具备，阅读代码学习 API 用法"],
+  "07": ["运行示例观察线程交错输出", "多次运行，观察结果可能不同", "进阶：调整线程数量或共享数据方式再观察"],
+  "08": ["运行示例观察输出", "对比你机器的逻辑 CPU 数量"],
+};
+function cookbookSteps(id) {
+  return CHAPTER_STEPS[id.slice(0, 2)] || null;
 }
 
 const CHAPTER_STD = {
