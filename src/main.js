@@ -244,6 +244,17 @@ function showResult(res, submitted) {
   $("#outputCard").classList.remove("hidden");
   const out = $("#output");
   if (current && current.scratch) {
+    if (res.timeout) {
+      $("#runStatus").textContent = `⏱ 超时（${res.timeoutSecs || 150}s）`;
+      $("#runStatus").className = "err";
+      const partial = res.outputSeen || (res.stdout || "") + (res.stderr || "");
+      out.innerHTML = `<span class="err">⏱ 编译+运行超过 ${res.timeoutSecs || 150}s。</span>` +
+        (partial ? `\n程序超时前已产生的输出：\n${escapeHtml(partial)}` : "") +
+        `\n\n首次编译新的 std 模块较慢——<b>再运行一次</b>通常命中缓存就会快很多。\n` +
+        `网络/服务类示例（TCP、HTTP 服务端）会一直等待连接，超时自动结束属于正常现象。`;
+      out.scrollTop = 0;
+      return;
+    }
     $("#runStatus").textContent = res.passed ? t("scratchOk") : t("scratchFail");
     $("#runStatus").className = res.passed ? "ok" : "err";
     out.innerHTML = escapeHtml((res.stdout || "") + (res.stderr || "")) || "(无输出)";
@@ -262,8 +273,13 @@ function showResult(res, submitted) {
     }
     $("#btnSubmit").disabled = false;
   } else if (res.timeout) {
-    $("#runStatus").textContent = t("timeout"); $("#runStatus").className = "err";
-    out.innerHTML = `<span class="err">${escapeHtml(res.stderr)}</span>`;
+    $("#runStatus").textContent = `⏱ 超时（${res.timeoutSecs || 30}s）`;
+    $("#runStatus").className = "err";
+    const partial = res.outputSeen || res.stdout || "";
+    out.innerHTML = `<span class="err">⏱ 编译+运行超过 ${res.timeoutSecs || 30}s。</span>` +
+      (partial ? `\n程序超时前已产生的输出：\n${escapeHtml(partial)}` : "") +
+      `\n\n首次编译新的 std 模块会比较慢——<b>再运行一次</b>通常命中缓存就会快很多。\n` +
+      `如果是网络/服务类示例（TCP、HTTP 服务端），它一直在等待连接，超时自动结束属于正常现象。`;
   } else {
     const compileErr = !res.stderr.includes("expected this output") && res.returncode !== 0;
     $("#runStatus").textContent = compileErr ? t("compileErr") : t("outputMismatch");

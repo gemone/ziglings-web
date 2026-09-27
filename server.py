@@ -433,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, json.dumps({"error": "bad file"}))
             _cookbook_ensure_fixtures(b.get("code") or "")
             res = run_scratch(b.get("code") or "", filename=fname,
-                              cwd=WORK)  # 配方相对路径(如 tests/xx.txt)以 work/runs 为根
+                              cwd=WORK, timeout=150)  # 首次编译新 std 模块较慢
             res["cookbook"] = True
             return self._send(200, json.dumps(res))
         if self.path == "/api/cookbook/judge":
@@ -450,7 +450,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, json.dumps({"passed": False,
                     "stderr": "该配方无法自动判题（参考实现运行失败）", "stdout": ""}))
             _cookbook_ensure_fixtures(b.get("code") or "")
-            p = _cookbook_run_code(b.get("code") or "")
+            p = _cookbook_run_code(b.get("code") or "", timeout=90)
             seen = (p.stdout + p.stderr).strip()
             passed = p.returncode == 0 and normalize(seen) == normalize(expected)
             return self._send(200, json.dumps({
@@ -670,23 +670,28 @@ pub fn main() void {
 """
 
 
-def run_scratch(code, filename=SCRATCH_FILE, cwd=None):
+def run_scratch(code, filename=SCRATCH_FILE, cwd=None, timeout=None):
     """自由实验：编译+运行，不判题，退出码 0 即通过。"""
+    timeout = timeout or RUN_TIMEOUT
     path = os.path.join(WORK, filename)
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(code)
+        p = subprocess.Popen([zig_exe(), "run", path], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=ZIG_ENV,
+                             cwd=cwd or ROOT)
         try:
-            p = subprocess.run([zig_exe(), "run", path], capture_output=True,
-                               text=True, timeout=RUN_TIMEOUT, env=ZIG_ENV,
-                               cwd=cwd or ROOT)
+            out, err = p.communicate(timeout=timeout)
+            rc = p.returncode
         except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()  # 保留已产生的部分输出（如 "listening on ..."）
             return {"passed": False, "timeout": True, "returncode": -1,
-                    "stdout": "", "stderr": f"Timed out after {RUN_TIMEOUT}s.",
-                    "outputSeen": "", "expected": "", "scratch": True}
-    return {"passed": p.returncode == 0, "returncode": p.returncode,
-            "stdout": p.stdout, "stderr": p.stderr,
-            "outputSeen": (p.stdout + p.stderr).strip(),
+                    "stdout": out, "stderr": err, "timeoutSecs": timeout,
+                    "outputSeen": (out + err).strip(), "expected": "", "scratch": True}
+    return {"passed": rc == 0, "returncode": rc,
+            "stdout": out, "stderr": err,
+            "outputSeen": (out + err).strip(),
             "expected": "", "scratch": True}
 
 
@@ -706,8 +711,9 @@ def _cookbook_expected_path(rid):
     return os.path.join(ROOT, "work", "cache", "cookbook", f"expected_{rid}.txt")
 
 
-def _cookbook_run_code(code):
+def _cookbook_run_code(code, timeout=None):
     """运行 cookbook 代码（cwd=work/runs，自动准备夹具），返回结果。"""
+    timeout = timeout or 90
     path = os.path.join(WORK, "cookbook_tmp_run.zig")
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
