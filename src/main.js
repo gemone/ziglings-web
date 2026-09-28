@@ -142,8 +142,61 @@ function scheduleLint() {
   }, 600);
 }
 
+/* ---------- 悬停主题查询：符号 → 文档主题 ---------- */
+const KEYWORD_ANCHORS = {
+  "fn": "#Functions", "test": "#Zig-Test", "const": "#Variables", "var": "#Variables",
+  "if": "#if", "else": "#if", "while": "#while", "for": "#for", "switch": "#switch",
+  "defer": "#defer", "errdefer": "#defer", "struct": "#struct", "enum": "#enum",
+  "union": "#union", "opaque": "#opaque", "error": "#Errors", "try": "#Errors",
+  "catch": "#Errors", "orelse": "#Optionals", "comptime": "#comptime",
+  "unreachable": "#unreachable", "pub": "#Functions", "async": "#Async-Functions",
+  "suspend": "#Async-Functions", "resume": "#Async-Functions",
+  "@import": "#Hello-World", "@panic": "#unreachable",
+};
+const TYPE_ANCHORS = {
+  "u8": "#Integers", "u16": "#Integers", "u32": "#Integers", "u64": "#Integers",
+  "i8": "#Integers", "i32": "#Integers", "i64": "#Integers", "usize": "#Integers",
+  "isize": "#Integers", "f16": "#Floats", "f32": "#Floats", "f64": "#Floats",
+  "bool": "#Primitive-Types", "void": "#Primitive-Types", "noreturn": "#noreturn",
+  "anytype": "#comptime", "type": "#Types", "true": "#Primitive-Values",
+  "false": "#Primitive-Values", "null": "#Optionals", "undefined": "#Primitive-Values",
+};
+
+function hoverLookup(symbol) {
+  if (symbol.startsWith("std.")) {
+    const sym = symbol.replace(/\.$/, "");
+    return { kind: "std", title: sym,
+             desc: "std 标准库符号 · 点击查看官方文档",
+             doc: STD + sym };
+  }
+  if (symbol.startsWith("@")) {
+    return { kind: "builtin", title: symbol,
+             desc: "Zig 内建函数 · 见 Builtin-Functions 章节",
+             doc: LANGREF + "#Builtin-Functions" };
+  }
+  if (KEYWORD_ANCHORS[symbol]) {
+    return { kind: "kw", title: symbol,
+             desc: "Zig 语言关键字 · 点击打开语言参考章节",
+             doc: LANGREF + KEYWORD_ANCHORS[symbol] };
+  }
+  if (TYPE_ANCHORS[symbol]) {
+    return { kind: "type", title: symbol,
+             desc: "Zig 原生类型 · 点击打开语言参考章节",
+             doc: LANGREF + TYPE_ANCHORS[symbol] };
+  }
+  const hits = TOPICS.filter(tp => tp.match.test(symbol));
+  if (hits.length) {
+    const h = hits[0];
+    return { kind: "topic", title: h.name,
+             desc: "相关主题 · 点击打开文档章节",
+             doc: LANGREF + (h.doc || "") };
+  }
+  return null;
+}
+
 function mountEditor(code) {
   if (editor) { editor.destroy(); editor = null; }
+  $("#editorHost").innerHTML = "";   // 清空宿主（移除旧的错误提示/旧编辑器）
   try {
     editor = createEditor({
       parent: $("#editorHost"),
