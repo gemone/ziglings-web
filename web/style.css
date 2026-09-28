@@ -270,3 +270,9 @@ dialog input { width: 100%; margin-top: 4px; }
 /* Cookbook 模式切换按钮 */
 @keyframes shake { 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
 button.shake { animation: shake .3s; color: var(--err); }
+
+/* 悬停主题提示 */
+.zig-hover { padding: 6px 10px; max-width: 340px; }
+.zig-hover-title { font-weight: 600; color: var(--accent); font-family: ui-monospace, Consolas, monospace; }
+.zig-hover-desc { color: var(--muted); font-size: .82rem; margin: 3px 0; }
+.zig-hover a { font-size: .82rem; }

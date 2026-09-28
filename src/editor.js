@@ -1,5 +1,6 @@
 // CodeMirror 6 editor with ZLS language-server support.
 import { EditorView, keymap, lineNumbers, highlightActiveLine,
+         hoverTooltip,
          highlightActiveLineGutter, drawSelection, highlightSpecialChars,
          dropCursor } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
@@ -71,7 +72,117 @@ function wsUrl() {
  * Create an editor instance wired to ZLS for one exercise document.
  * Returns { view, destroy, setDoc }.
  */
-export function createEditor({ parent, doc, fileUri, rootUri, onRun, onChange }) {
+
+const STD_DOCS_BASE = "https://ziglang.org/documentation/0.16.0/std/#";
+
+// ---------- 常用 std API 签名（离线速查，ZLS 不可用时兜底） ----------
+const STD_SIGS = {
+  "std.debug.print": "fn print(comptime fmt: []const u8, args: anytype) void",
+  "std.fs.cwd": "fn cwd() Dir",
+  "std.json.parseFromSlice": "fn parseFromSlice(comptime T, allocator, s, options) !Parsed(T)",
+  "std.base64.standard.Encoder": "fn encode(dest: []u8, source: []const u8) []const u8",
+  "std.base64.standard.Decoder": "fn decode(dest: []u8, source: []const u8) !void",
+  "std.Thread.spawn": "fn spawn(options, comptime func, args) !Thread",
+  "std.Thread.sleep": "fn sleep(nanoseconds: u64) void",
+  "std.crypto.hash.sha2.Sha256": "Sha256 — SHA-2 256 位哈希",
+  "std.crypto.pwhash.pbkdf2": "fn pbkdf2(dk, password, salt, rounds, Prf) !void",
+  "std.SemanticVersion.parse": "fn parse(text: []const u8) !SemanticVersion",
+  "std.process.Init": "std.process.Init — 新版进程初始化参数（io/gpa/args）",
+  "std.testing.expect": "fn expect(ok: bool) !void",
+  "std.testing.expectEqual": "fn expectEqual(expected, actual) !void",
+  "std.testing.expectEqualStrings": "fn expectEqualStrings(expected, actual) !void",
+  "std.ArrayList": "ArrayList(comptime T) type — 可增长数组",
+  "std.net.IpAddress.parse": "fn parse(name: []const u8, port: u16) !IpAddress",
+};
+
+// Zig 内建函数签名
+const BUILTIN_SIGS = {
+  "@import": "fn @import(path: []const u8) type",
+  "@intCast": "fn @intCast(expr: anytype) anytype",
+  "@floatCast": "fn @floatCast(expr: anytype) anytype",
+  "@panic": "fn @panic(message: []const u8) noreturn",
+  "@typeName": "fn @typeName(T: anytype) []const u8",
+  "@TypeOf": "fn @TypeOf(expr) type",
+  "@sizeOf": "fn @sizeOf(T: type) comptime_int",
+};
+
+// 本地文档分析：查找 word 的本地声明
+function findLocalSig(docText, word) {
+  const esc = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lines = docText.split("\n");
+  for (const ln of lines) {
+    const fnM = ln.match(new RegExp("(?:pub )?fn\\s+" + esc + "\\s*\\((.*)\\)(?:\\s*(\\!?[A-Za-z_][\\w.]*))?"));
+    if (fnM) {
+      const ret = fnM[2] ? " " + fnM[2] : "";
+      return "fn " + word + "(" + fnM[1].trim() + ")" + ret;
+    }
+  }
+  for (const ln of lines) {
+    const vM = ln.match(new RegExp("(pub )?(const|var)\\s+" + esc + "(\\s*:\\s*[^=]+)?\\s*="));
+    if (vM) {
+      return vM[2] + " " + word + (vM[3] ? " " + vM[3].trim() : " (推断类型)") + " = …";
+    }
+  }
+  return null;
+}
+
+// 悬停主题提示工厂
+function makeZigHover(hoverLookup) {
+  return hoverTooltip((view, pos) => {
+    const line = view.state.doc.lineAt(pos);
+    const text = line.text;
+    let start = pos - line.from, end = pos - line.from;
+    while (start > 0 && /[A-Za-z0-9_.@]/.test(text[start - 1])) start--;
+    while (end < text.length && /[A-Za-z0-9_.@]/.test(text[end])) end++;
+    let word = text.slice(start, end);
+    if (word === "std" && text[end] === ".") {
+      let e2 = end;
+      while (e2 < text.length && /[A-Za-z0-9_.]/.test(text[e2])) e2++;
+      word = text.slice(start, e2);
+      end = e2;
+    }
+    if (!word || word === "." || word.length < 2) return null;
+    const docText = view.state.doc.toString();
+    const localSig = findLocalSig(docText, word);
+    const stdSig = STD_SIGS[word] || null;
+    const builtinSig = BUILTIN_SIGS[word] || null;
+    const info = hoverLookup ? hoverLookup(word) : null;
+    if (!info && !localSig && !stdSig && !builtinSig) return null;
+    const dom = document.createElement("div");
+    dom.className = "zig-hover";
+    const title = document.createElement("div");
+    title.className = "zig-hover-title";
+    title.textContent = word;
+    dom.appendChild(title);
+    const sig = localSig || stdSig || builtinSig;
+    if (sig) {
+      const sigEl = document.createElement("div");
+      sigEl.className = "zig-hover-sig";
+      sigEl.textContent = sig;
+      dom.appendChild(sigEl);
+    }
+    if (info && info.desc) {
+      const d = document.createElement("div");
+      d.className = "zig-hover-desc";
+      d.textContent = info.desc;
+      dom.appendChild(d);
+    }
+    let docUrl = null;
+    if (info && info.doc) docUrl = info.doc;
+    else if (word.startsWith("std.")) docUrl = STD_DOCS_BASE + word;
+    if (docUrl) {
+      const a = document.createElement("a");
+      a.href = "#";
+      a.textContent = "📖 打开文档 →";
+      a.onclick = (e) => { e.preventDefault(); onOpenDoc && onOpenDoc(docUrl); };
+      dom.appendChild(a);
+    }
+    return { pos: line.from + start, end: line.from + end,
+             create: () => ({ dom }) };
+  }, { hoverTime: 350 });
+}
+
+export function createEditor({ parent, doc, fileUri, rootUri, onRun, onChange, hoverLookup, onOpenDoc }) {
   const transport = new WsLspTransport(wsUrl());
   const lsp = languageServerWithTransport({
     documentUri: fileUri,
@@ -101,6 +212,7 @@ export function createEditor({ parent, doc, fileUri, rootUri, onRun, onChange })
                  ...lintKeymap]),
       zigLanguage,
       zigHighlight,
+      makeZigHover(hoverLookup),
       darkTheme,
       lsp,
       EditorView.lineWrapping,

@@ -152,6 +152,13 @@ function mountEditor(code) {
       rootUri: current.rootUri,
       onRun: run,
       onChange: () => { saveDraft(); scheduleLint(); },
+      hoverLookup,
+      onOpenDoc: (url) => {
+        document.body.classList.remove("dock-hidden");   // 文档在右侧面板打开
+        localStorage.setItem("dockHidden", "0");
+        document.querySelector('.tab[data-tab="ref"]').click();
+        loadDoc(url);
+      },
     });
   } catch (e) {
     $("#editorHost").textContent = t("editorFail") + e.message;
