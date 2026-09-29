@@ -83,7 +83,7 @@ def parse_string_field(entry, name):
             j = i + 1
             buf = ""
             while j < len(entry) and entry[j] != '"':
-                if entry[j] == "\\":
+                if entry[j] == "\\" and j + 1 < len(entry):
                     nxt = entry[j + 1]
                     buf += {"n": "\n", "t": "\t", "\\": "\\", '"': '"'}.get(nxt, nxt)
                     j += 2
@@ -125,7 +125,7 @@ def parse_table_generic(body):
             "check_stdout": parse_bool_flag(entry, "check_stdout"),
             "link_libc": parse_bool_flag(entry, "link_libc"),
             "timestamp": parse_bool_flag(entry, "timestamp"),
-            "skip": parse_bool_flag(entry, "skip") or bool(re.search(r"\.skip\b", entry)),
+            "skip": parse_bool_flag(entry, "skip"),
         })
     out.sort(key=lambda x: x["file"])
     for n, e in enumerate(out, 1):

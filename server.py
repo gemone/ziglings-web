@@ -106,38 +106,43 @@ def ziglings_tag_for(version):
 
 
 def apply_zig_version(version):
-    """切换 zig 版本：保存配置 → ziglings 切到对应 tag → 重提元数据 → 更新 zls 配置。"""
+    """切换 zig 版本：checkout 对应 tag → 重提元数据 → 全部成功才持久化配置。
+
+    任一步失败即返回错误并保持原状态（不会出现"新版本标签 + 旧元数据"的错位）。
+    """
     zigs = {z["version"]: z["path"] for z in list_zigs()}
     if version not in zigs:
         return False, f"未安装 zig {version}"
+    # 1) ziglings 切换到对应版本的 tag（默认分支仅当无匹配 tag 时）
+    tag = ziglings_tag_for(version)
+    target = tag or "main"
+    try:
+        cp = subprocess.run(["git", "checkout", "-f", target], cwd=ZIGLINGS,
+                            capture_output=True, timeout=60)
+        if cp.returncode != 0:
+            return False, f"checkout {target} 失败: {cp.stderr.decode(errors='replace')[:200]}"
+    except Exception as e:
+        return False, f"checkout 异常: {e}"
+    # 2) 重新提取该版本题库的元数据（必须成功）
+    try:
+        cp = subprocess.run(["python3", os.path.join(ROOT, "tools", "extract_exercises.py")],
+                            capture_output=True, timeout=120)
+        if cp.returncode != 0:
+            return False, "重新提取元数据失败: " + cp.stderr.decode(errors="replace")[:200]
+    except Exception as e:
+        return False, f"重提元数据异常: {e}"
+    # 3) 全部成功才持久化配置
     cfg = load_json(APP_CONFIG, {})
     cfg["zigVersion"] = version
     save_json(APP_CONFIG, cfg)
-    # 1) ziglings 切换到对应版本的 tag（默认分支仅当无匹配 tag 时）
-    tag = ziglings_tag_for(version)
-    try:
-        if tag:
-            subprocess.run(["git", "checkout", "-f", tag], cwd=ZIGLINGS,
-                           capture_output=True, timeout=60)
-        else:
-            subprocess.run(["git", "checkout", "-f", "main"], cwd=ZIGLINGS,
-                           capture_output=True, timeout=60)
-    except Exception as e:
-        print(f"[zig] ziglings checkout failed: {e}")
-    # 2) 重新提取该版本题库的元数据
-    try:
-        subprocess.run(["python3", os.path.join(ROOT, "tools", "extract_exercises.py")],
-                       check=True, capture_output=True, timeout=60)
-    except Exception as e:
-        print(f"[zig] re-extract failed: {e}")
-    # 3) 更新 zls 配置指向该 zig（zls 版本需与 zig 一致才能完全工作）
+    # 4) 更新 zls 配置指向该 zig（zls 版本需与 zig 一致才能完全工作）
     zls_json = os.path.join(ROOT, "work", "zls.json")
     zcfg = load_json(zls_json, {})
     exe = zigs[version]
     zcfg["zig_exe_path"] = exe
     zcfg["zig_lib_path"] = os.path.join(os.path.dirname(exe), "lib")
     save_json(zls_json, zcfg)
-    return True, tag or "main"
+    return True, target
 
 os.makedirs(WORK, exist_ok=True)
 os.makedirs(os.path.join(ROOT, ".zigcache"), exist_ok=True)
@@ -538,7 +543,7 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _user_code(self, f):
-        p = os.path.join(WORK, f)
+        p = os.path.join(WORK, os.path.basename(f))
         if os.path.isfile(p):
             return open(p, encoding="utf-8").read()
         return None
@@ -571,7 +576,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(res))
         if self.path.startswith("/api/solution/"):
             f = os.path.basename(self.path)
-            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith(("cookbook_", "playground_")):
+            if f not in BY_FILE and f != SCRATCH_FILE and \
+               not re.fullmatch(r"(?:cookbook|playground|zbe)_[A-Za-z0-9-]+\.zig", f):
                 return self._send(400, json.dumps({"error": "unknown exercise"}))
             b = self._json_body()
             with open(os.path.join(WORK, f), "w", encoding="utf-8") as fh:
@@ -607,8 +613,9 @@ class Handler(BaseHTTPRequestHandler):
                 "attempts": sum(1 for s in subs if s["file"] == ex["file"])}))
         if self.path == "/api/lint":
             b = self._json_body()
-            f = b.get("file") or ""
-            if f not in BY_FILE and f != SCRATCH_FILE and not f.startswith(("cookbook_", "playground_", "zbe_")):
+            f = os.path.basename(b.get("file") or "")
+            if f not in BY_FILE and f != SCRATCH_FILE and \
+               not re.fullmatch(r"(?:cookbook|playground|zbe)_[A-Za-z0-9-]+\.zig", f):
                 return self._send(400, json.dumps({"error": "unknown exercise"}))
             return self._send(200, json.dumps({"diagnostics": zig_lint(f, b.get("code") or "")}))
         if self.path == "/api/env/select":
@@ -811,7 +818,8 @@ pub fn main() void {
 
 
 def _cookbook_expected_path(rid):
-    return os.path.join(ROOT, "work", "cache", "cookbook", f"expected_{rid}.txt")
+    ver = (selected_zig_version() or "default").replace(".", "_")
+    return os.path.join(ROOT, "work", "cache", "cookbook", f"expected_{ver}_{rid}.txt")
 
 
 def _cookbook_run_code(code, timeout=None):
@@ -944,7 +952,9 @@ def start_bg_run(code, filename, args=None, cwd=None, mode="run"):
     ent = {"p": None, "out": [], "err": [], "done": False, "rc": None,
            "file": filename, "lock": threading.Lock()}
     with BG_LOCK:
-        # 清理已完成超过 10 分钟的旧任务
+        running = sum(1 for e in BGRUNS.values() if not e["done"])
+        if running >= 6:
+            raise RuntimeError("后台运行任务已达上限（6 个），请先停止部分任务")
         BGRUNS[rid] = ent
         if len(BGRUNS) > 12:
             for k in list(BGRUNS)[:-12]:

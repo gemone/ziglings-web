@@ -315,7 +315,7 @@ function saveDraft() {
 function syncArgsInput() {
   const box = $("#argsInput");
   if (!box) return;
-  box.style.display = current && (current.scratch || current.file.startsWith("cookbook_")) ? "" : "none";
+  box.style.display = current && (current.scratch || current.file.startsWith("cookbook_") || current.file.startsWith("playground_")) ? "" : "none";
 }
 /* ---------- 后台运行（实时输出，可多个同时跑） ---------- */
 const bgRuns = new Map();   // runId -> {title, timer, port}
@@ -451,7 +451,9 @@ function showResult(res, submitted) {
     $("#runStatus").textContent = `⏱ 超时（${res.timeoutSecs || 30}s）`;
     $("#runStatus").className = "err";
     const partial = res.outputSeen || res.stdout || "";
-    out.innerHTML = `<span class="err">⏱ ${t("timeout")}（${res.timeoutSecs || 30}s）</span>${ESC}${ESC}${t("timeoutHint")}`;
+    out.innerHTML = `<span class="err">⏱ ${t("timeout")}（${res.timeoutSecs || 30}s）</span>` +
+      (partial ? `\n程序超时前已产生的输出：\n${escapeHtml(partial)}` : "") +
+      `\n\n${t("timeoutHint")}`;
   } else {
     const compileErr = !res.stderr.includes("expected this output") && res.returncode !== 0;
     $("#runStatus").textContent = compileErr ? t("compileErr") : t("outputMismatch");
@@ -820,7 +822,12 @@ function renderCookbookList(filter = "") {
 /* ---------- 内容源切换（下拉） ---------- */
 const sourceSelect = $("#sourceSelect");
 function syncSourceSelect() {
-  sourceSelect.value = cookbookMode ? "cookbook" : (zbeMode ? "zbe" : (current && current.scratch && current.file === "scratch.zig" ? "scratch" : "ziglings"));
+  let v = "ziglings";
+  if (cookbookMode) v = "cookbook";
+  else if (zbeMode) v = "zbe";
+  else if (current && current.scratch && current.file === "scratch.zig") v = "scratch";
+  else if (current && current.file.startsWith("playground_")) v = "cookbook";
+  sourceSelect.value = v;
 }
 function btnLoading(on) { sourceSelect.disabled = on; }
 async function switchSource(mode) {
@@ -866,6 +873,8 @@ async function switchSource(mode) {
     renderList($("#search").value);
     $("#exTitle").textContent = "⚠ " + String(e).slice(0, 60);
     $("#lesson").textContent = t("sourceLoadFail");
+  } finally {
+    sourceSelect.disabled = false;   // 失败也不能永久禁用下拉
   }
   editor && editor.destroy(); editor = null;
   syncSourceSelect();
@@ -1404,7 +1413,7 @@ $("#btnDocTranslate").onclick = async () => {
     return;
   }
   const uniq = [...new Set(nodes.map(n => n.nodeValue.trim()))];
-  const target = "zh";
+  const target = getLang() === "en" ? "en" : "zh";
   const map = new Map();
   docTr = { map, target, observer: null };
   btn.disabled = true;
