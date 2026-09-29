@@ -383,6 +383,8 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self):
+        if not self.path.startswith(("/proxy?url=", "/p/")) and "?" in self.path:
+            self.path = self.path.split("?", 1)[0]  # 路由用纯路径
         if self.path.split("?")[0] == "/api/zbe":
             lang = ""
             try:
@@ -564,6 +566,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global EXERCISES, BY_FILE
+        if "?" in self.path:
+            self.path = self.path.split("?", 1)[0]
         if self.path == "/api/run":
             b = self._json_body()
             f = b.get("file") or ""
