@@ -868,10 +868,21 @@ async function switchSource(mode) {
     if (mpg) mpg.style.display = "none";
   }
   } catch (e) {
-    // 拉取失败：回退到 ziglings 并提示
+    // 自动重试一次（网络抖动常见）
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      if (mode === "cookbook") { await ensureCookbookList(); renderCookbookList($("#search").value);
+        $("#exTitle").textContent = "📖 zig-cookbook — " + t("cookbookSub");
+        $("#lesson").textContent = t("cookbookHome"); }
+      else if (mode === "zbe") { await ensureZbeProgress(); zbeList = await (await fetch("/api/zbe")).json(); renderZbeList($("#search").value);
+        $("#exTitle").textContent = "📘 Zig by Example"; $("#lesson").textContent = t("zbeHome"); }
+      editor && editor.destroy(); editor = null;
+      syncSourceSelect();
+      return;
+    } catch (e2) { /* 重试仍失败 → 回退提示 */ }
     cookbookMode = false; zbeMode = false;
     renderList($("#search").value);
-    $("#exTitle").textContent = "⚠ " + String(e).slice(0, 60);
+    $("#exTitle").textContent = "⚠ " + t("sourceLoadFail");
     $("#lesson").textContent = t("sourceLoadFail");
   } finally {
     sourceSelect.disabled = false;   // 失败也不能永久禁用下拉

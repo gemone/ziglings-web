@@ -94,7 +94,7 @@ def list_pages():
     cp = _cp("__list__")
     if os.path.isfile(cp) and time.time() - os.path.getmtime(cp) < TTL:
         return json_load(cp)
-    raw, _ = fetch_cached(BASE, ttl=0)  # 首页总是拉最新
+    raw, _ = fetch_cached(BASE, ttl=TTL)  # 索引同样走 TTL 缓存，避免每次切换都依赖网络
     links = re.findall(r'href="([a-z0-9-]+)(?:\.html)?"[^>]*>([^<]+)<', raw)
     out = []
     seen = set()
