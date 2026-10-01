@@ -19,22 +19,18 @@ RAW = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/"
 TREE_API = f"https://api.github.com/repos/{REPO}/git/trees/{BRANCH}?recursive=1"
 TTL = float(os.environ.get("COOKBOOK_TTL", "86400"))  # 24h
 
-CHAPTERS = {
-    "01": ("文件与目录", "Files & directories"),
-    "02": ("加密与哈希", "Crypto & hashes"),
-    "03": ("时间", "Time"),
-    "04": ("TCP 网络", "TCP networking"),
-    "05": ("HTTP", "HTTP"),
-    "06": ("随机数", "Random"),
-    "07": ("线程", "Threads"),
-    "08": ("操作系统", "OS"),
-    "09": ("语义化版本", "Semantic version"),
-    "10": ("序列化", "Serialization"),
-    "11": ("复数", "Complex numbers"),
-    "12": ("数据结构", "Data structures"),
-    "13": ("命令行参数", "CLI arguments"),
-    "14": ("数据库", "Databases"),
-    "15": ("正则与字符串", "Regex & strings"),
+CHAPTER_DIRS = {
+    "file-system": ("文件系统", "File system"),
+    "cryptography": ("加密与哈希", "Crypto & hashes"),
+    "date-time": ("日期与时间", "Date & time"),
+    "networking-web": ("网络与 Web", "Networking & web"),
+    "random": ("随机数", "Random"),
+    "concurrency": ("并发", "Concurrency"),
+    "systems-tools": ("系统与工具", "Systems & tools"),
+    "encoding-text-processing": ("编码与文本处理", "Encoding & text processing"),
+    "algorithms-data-structures": ("算法与数据结构", "Algorithms & data structures"),
+    "database": ("数据库", "Databases"),
+    "general": ("综合", "General"),
 }
 
 
@@ -54,9 +50,11 @@ def fetch_cached(relpath, ttl=TTL):
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
-                text = r.read().decode("utf-8")
-            with open(cp, "w", encoding="utf-8") as fh:
-                fh.write(text)
+                raw = r.read()
+            os.makedirs(os.path.dirname(cp), exist_ok=True)
+            with open(cp, "wb") as fh:
+                fh.write(raw)
+            text = raw.decode("utf-8", "replace")
             return text, False
         except Exception as e:
             last_err = e
@@ -92,9 +90,12 @@ def _recipe_ids():
         json.dump(tree, open(cp, "w", encoding="utf-8"))
     ids = set()
     for item in tree.get("tree", []):
-        m = re.match(r"src/zh-CN/(\d\d-\d\d-[^/]+)\.smd$", item.get("path", ""))
+        m = re.match(r"src/zh-CN/(.+)\.smd$", item.get("path", ""))
         if m:
-            ids.add(m.group(1))
+            base = m.group(1)
+            if base.split("/")[-1] in ("index", "toc"):
+                continue
+            ids.add(base.replace("/", "__"))
     return sorted(ids)
 
 
@@ -149,8 +150,10 @@ def list_recipes(lang="zh-CN"):
             "chapterName": r["chapterName"], "title": r["title"],
         })
     out.sort(key=lambda r: (r["chapter"], r["id"]))
-    os.makedirs(CACHE, exist_ok=True)
-    json.dump(out, open(snapshot, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    # 只有全部配方解析成功才写快照；部分成功不缓存（下次请求继续补拉缺失的）
+    if len(out) == len(_recipe_ids()):
+        os.makedirs(CACHE, exist_ok=True)
+        json.dump(out, open(snapshot, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     return out
 
 

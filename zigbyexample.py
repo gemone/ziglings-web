@@ -30,10 +30,10 @@ def fetch_cached(url, ttl=TTL):
     for attempt in range(4):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
-                text = r.read().decode("utf-8")
-            with open(cp, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            return text, False
+                raw = r.read()
+            with open(cp, "wb") as fh:
+                fh.write(raw)
+            return raw.decode("utf-8", "replace"), False
         except Exception as e:
             last = e
             time.sleep(0.8 * (attempt + 1))
