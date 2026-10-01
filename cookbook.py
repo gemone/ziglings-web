@@ -118,11 +118,12 @@ def parse_recipe(rid, lang="zh-CN"):
         if not asset.startswith("assets/"):
             asset = "assets/" + asset
         code, _ = fetch_cached(asset)
-    chapter = rid[:2]
+    chapter = rid.split("__", 1)[0]
+    names = CHAPTER_DIRS.get(chapter, (chapter, chapter))
     return {
         "id": rid,
         "chapter": chapter,
-        "chapterName": CHAPTERS.get(chapter, (chapter, chapter))[lang == "en-US"],
+        "chapterName": names[1] if lang == "en-US" else names[0],
         "title": title,
         "prose": prose,
         "code": code,
@@ -133,7 +134,10 @@ def list_recipes(lang="zh-CN"):
     """All recipes (cached fast-path: one parsed JSON snapshot per lang+TTL)."""
     snapshot = _cache_path(f"__list_{lang}__")
     if os.path.isfile(snapshot) and time.time() - os.path.getmtime(snapshot) < TTL:
-        return json.load(open(snapshot, encoding="utf-8"))
+        cached = json.load(open(snapshot, encoding="utf-8"))
+        if cached:  # 空快照是历史解析失败的产物，忽略重拉
+            return cached
+        os.remove(snapshot)
     out = []
     for rid in _recipe_ids():
         try:

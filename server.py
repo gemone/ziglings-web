@@ -113,6 +113,8 @@ def apply_zig_version(version):
     zigs = {z["version"]: z["path"] for z in list_zigs()}
     if version not in zigs:
         return False, f"未安装 zig {version}"
+    # 0) 记录旧版本的 tag，失败时回滚 checkout
+    prev_version = selected_zig_version()
     # 1) ziglings 切换到对应版本的 tag（默认分支仅当无匹配 tag 时）
     tag = ziglings_tag_for(version)
     target = tag or "main"
@@ -123,25 +125,36 @@ def apply_zig_version(version):
             return False, f"checkout {target} 失败: {cp.stderr.decode(errors='replace')[:200]}"
     except Exception as e:
         return False, f"checkout 异常: {e}"
-    # 2) 重新提取该版本题库的元数据（必须成功）
+    # 2) 重新提取该版本题库的元数据（必须成功；失败则回滚到旧 tag）
     try:
         cp = subprocess.run(["python3", os.path.join(ROOT, "tools", "extract_exercises.py")],
                             capture_output=True, timeout=120)
         if cp.returncode != 0:
-            return False, "重新提取元数据失败: " + cp.stderr.decode(errors="replace")[:200]
+            prev_tag = ziglings_tag_for(prev_version) if prev_version else None
+            rollback_target = prev_tag or "main"
+            subprocess.run(["git", "checkout", "-f", rollback_target], cwd=ZIGLINGS,
+                           capture_output=True, timeout=60)
+            return False, (f"重新提取元数据失败（已回滚到 {rollback_target}）: "
+                           + cp.stderr.decode(errors="replace")[:200])
     except Exception as e:
-        return False, f"重提元数据异常: {e}"
+        prev_tag = ziglings_tag_for(prev_version) if prev_version else None
+        subprocess.run(["git", "checkout", "-f", prev_tag or "main"], cwd=ZIGLINGS,
+                       capture_output=True, timeout=60)
+        return False, f"重提元数据异常（已回滚到 {prev_tag or 'main'}）: {e}"
     # 3) 全部成功才持久化配置
     cfg = load_json(APP_CONFIG, {})
     cfg["zigVersion"] = version
     save_json(APP_CONFIG, cfg)
     # 4) 更新 zls 配置指向该 zig（zls 版本需与 zig 一致才能完全工作）
-    zls_json = os.path.join(ROOT, "work", "zls.json")
-    zcfg = load_json(zls_json, {})
-    exe = zigs[version]
-    zcfg["zig_exe_path"] = exe
-    zcfg["zig_lib_path"] = os.path.join(os.path.dirname(exe), "lib")
-    save_json(zls_json, zcfg)
+    try:
+        zls_json = os.path.join(ROOT, "work", "zls.json")
+        zcfg = load_json(zls_json, {})
+        exe = zigs[version]
+        zcfg["zig_exe_path"] = exe
+        zcfg["zig_lib_path"] = os.path.join(os.path.dirname(exe), "lib")
+        save_json(zls_json, zcfg)
+    except OSError:
+        pass  # zls 配置写失败不影响主流程
     return True, target
 
 os.makedirs(WORK, exist_ok=True)
@@ -383,10 +396,9 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self):
-        if not self.path.startswith(("/proxy?url=", "/p/")) and "?" in self.path:
-            self.path = self.path.split("?", 1)[0]  # 路由用纯路径
-        if self.path.split("?")[0] == "/api/zbe":
-            lang = ""
+        if not self.path.startswith(("/proxy?url=", "/p/", "/api/cookbook")) and "?" in self.path:
+            self.path = self.path.split("?", 1)[0]  # 路由用纯路径（/api/cookbook 自行解析 ?lang=）
+        if self.path == "/api/zbe":
             try:
                 return self._send(200, json.dumps(zigbyexample.list_pages()))
             except Exception as e:
@@ -471,7 +483,10 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import urlparse, parse_qs
             lang = "en-US" if "en" in (parse_qs(urlparse(self.path).query).get("lang") or ["zh"]) else "zh-CN"
             try:
-                return self._send(200, json.dumps(cookbook.list_recipes(lang)))
+                recipes = cookbook.list_recipes(lang)
+                if not recipes and lang != "zh-CN":
+                    recipes = cookbook.list_recipes("zh-CN")  # 目标语言拉取失败时回退中文
+                return self._send(200, json.dumps(recipes))
             except Exception as e:
                 return self._send(502, json.dumps({"error": f"拉取 cookbook 失败: {e}"}))
         if self.path.startswith("/api/cookbook/recipe/"):
@@ -495,10 +510,10 @@ class Handler(BaseHTTPRequestHandler):
             rid = self.path.split("/challenge/")[1].split("?")[0]
             q = parse_qs(urlparse(self.path).query)
             lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
-            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+            if not re.fullmatch(r"[a-z0-9-]+(?:__[a-z0-9-]+)*", rid):
                 return self._send(400, json.dumps({"error": "bad id"}))
             has_override = rid in OVERRIDES and OVERRIDES[rid].get("code")
-            challengeable = has_override or rid[:2] in CHALLENGEABLE_CHAPTERS
+            challengeable = has_override  # 判题资格由覆盖层决定（需可判题的输出变体）
             expected = None
             note = None
             hints = None
@@ -663,7 +678,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/cookbook/judge":
             b = self._json_body()
             rid = b.get("id") or ""
-            if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+            if not re.fullmatch(r"[a-z0-9-]+(?:__[a-z0-9-]+)*", rid):
                 return self._send(400, json.dumps({"error": "bad id"}))
             lang = b.get("lang") if b.get("lang") in ("zh-CN", "en-US") else "zh-CN"
             try:
@@ -706,7 +721,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(a, str) or len(a) > 64 or not re.fullmatch(r"[A-Za-z0-9._:@-]*", a):
                     return self._send(400, json.dumps({"error": "非法参数"}))
             mode = b.get("mode") if b.get("mode") in ("run", "test") else "run"
-            rid = start_bg_run(b.get("code") or "", fname, args, WORK, mode)
+            try:
+                rid = start_bg_run(b.get("code") or "", fname, args, WORK, mode)
+            except RuntimeError as e:
+                return self._send(429, json.dumps({"error": str(e)}))
             return self._send(200, json.dumps({"runId": rid}))
         if self.path == "/api/translate":
             b = self._json_body()
@@ -950,8 +968,13 @@ def _bg_worker(run_id, code, filename, args, cwd, mode="run"):
     ent["done"] = True
 
 
+_BG_SEQ = 0
+
+
 def start_bg_run(code, filename, args=None, cwd=None, mode="run"):
-    rid = f"r{int(time.time()*1000)}"
+    global _BG_SEQ
+    _BG_SEQ += 1
+    rid = f"r{int(time.time()*1000)}_{_BG_SEQ}"  # 唯一 rid：并发同毫秒不再互相覆盖
     args = [a for a in (args or [])][:8]
     ent = {"p": None, "out": [], "err": [], "done": False, "rc": None,
            "file": filename, "lock": threading.Lock()}

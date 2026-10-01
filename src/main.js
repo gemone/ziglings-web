@@ -830,32 +830,18 @@ function syncSourceSelect() {
   sourceSelect.value = v;
 }
 function btnLoading(on) { sourceSelect.disabled = on; }
-async function switchSource(mode) {
-  cookbookMode = (mode === "cookbook");
-  zbeMode = (mode === "zbe");
-  current = null;
-  lastResult = null;
-  challengeActive = false;
-  recipeMode = null;
-  $("#outputCard").classList.add("hidden");
-  $("#runStatus").textContent = "";
-  try {
+async function loadSourceContent(mode) {
   if (mode === "cookbook") {
-    sourceSelect.disabled = true;
     await ensureCookbookList();
-    sourceSelect.disabled = false;
     renderCookbookList($("#search").value);
     $("#exTitle").textContent = "📖 zig-cookbook — " + t("cookbookSub");
     $("#lesson").textContent = t("cookbookHome");
   } else if (mode === "zbe") {
-    sourceSelect.disabled = true;
     await ensureZbeProgress();
-    sourceSelect.disabled = false;
     renderZbeList($("#search").value);
     $("#exTitle").textContent = "📘 Zig by Example";
     $("#lesson").textContent = t("zbeHome");
   } else if (mode === "scratch") {
-    syncSourceSelect();
     await select("__scratch__");
     return;
   } else {
@@ -867,23 +853,32 @@ async function switchSource(mode) {
     if (mcb) mcb.style.display = "none";
     if (mpg) mpg.style.display = "none";
   }
+}
+
+async function switchSource(mode) {
+  cookbookMode = (mode === "cookbook");
+  zbeMode = (mode === "zbe");
+  current = null;
+  lastResult = null;
+  challengeActive = false;
+  recipeMode = null;
+  $("#outputCard").classList.add("hidden");
+  $("#runStatus").textContent = "";
+  sourceSelect.disabled = true;
+  try {
+    await loadSourceContent(mode);
   } catch (e) {
     // 自动重试一次（网络抖动常见）
     await new Promise(r => setTimeout(r, 1500));
     try {
-      if (mode === "cookbook") { await ensureCookbookList(); renderCookbookList($("#search").value);
-        $("#exTitle").textContent = "📖 zig-cookbook — " + t("cookbookSub");
-        $("#lesson").textContent = t("cookbookHome"); }
-      else if (mode === "zbe") { await ensureZbeProgress(); zbeList = await (await fetch("/api/zbe")).json(); renderZbeList($("#search").value);
-        $("#exTitle").textContent = "📘 Zig by Example"; $("#lesson").textContent = t("zbeHome"); }
-      editor && editor.destroy(); editor = null;
-      syncSourceSelect();
-      return;
-    } catch (e2) { /* 重试仍失败 → 回退提示 */ }
-    cookbookMode = false; zbeMode = false;
-    renderList($("#search").value);
-    $("#exTitle").textContent = "⚠ " + t("sourceLoadFail");
-    $("#lesson").textContent = t("sourceLoadFail");
+      await loadSourceContent(mode);
+    } catch (e2) {
+      // 重试仍失败：回退到 ziglings 并提示
+      cookbookMode = false; zbeMode = false;
+      renderList($("#search").value);
+      $("#exTitle").textContent = "⚠ " + String(e2).slice(0, 60);
+      $("#lesson").textContent = t("sourceLoadFail");
+    }
   } finally {
     sourceSelect.disabled = false;   // 失败也不能永久禁用下拉
   }
@@ -1150,25 +1145,25 @@ function renderListSearchSafe() {
 }
 
 const CHAPTER_STEPS = {
-  "04": ["运行 TCP 服务器，记下输出里的监听端口", "把 TCP 客户端的端口改成同样的值（或填进程序参数框）", "运行客户端，观察两边的收发日志", "进阶：把服务器改成支持多客户端（配合 07 线程章节）"],
-  "05": ["运行 HTTP 示例，观察请求/输出", "修改 URL 或请求体再运行", "进阶：给服务端加一个自定义响应头"],
-  "14": ["该章需要本地 C 库与数据库服务（参考上游 docker-compose.yml）", "若环境不具备，阅读代码学习 API 用法"],
-  "07": ["运行示例观察线程交错输出", "多次运行，观察结果可能不同", "进阶：调整线程数量或共享数据方式再观察"],
-  "08": ["运行示例观察输出", "对比你机器的逻辑 CPU 数量"],
+  "networking-web": ["运行服务端示例，记下输出里的监听地址/端口", "运行对应的客户端示例（或在参数框填入端口）", "观察两边的收发日志", "进阶：修改协议行为（如 HTTP 响应头）"],
+  "database": ["该章需要本地 C 库与数据库服务（参考上游 docker-compose.yml）", "若环境不具备，阅读代码学习 API 用法"],
+  "concurrency": ["运行示例观察线程/协程交错输出", "多次运行，观察结果可能不同", "进阶：调整线程数量或共享数据方式再观察"],
+  "systems-tools": ["运行示例观察输出", "对比你机器的环境信息"],
 };
 function cookbookSteps(id) {
-  return CHAPTER_STEPS[id.slice(0, 2)] || null;
+  const dir = id.split("__")[0];
+  return CHAPTER_STEPS[dir] || null;
 }
 
 const CHAPTER_STD = {
-  "01": "std.fs", "02": "std.crypto", "03": "std.time", "04": "std.net",
-  "05": "std.http", "06": "std.Random", "07": "std.Thread", "08": "std.process",
-  "09": "std.SemanticVersion", "10": "std.json", "11": "std.math.complex",
-  "12": "std.DoublyLinkedList", "13": "std.process", "15": "std.ascii",
+  "file-system": "std.fs", "cryptography": "std.crypto", "date-time": "std.time",
+  "networking-web": "std.net", "random": "std.Random", "concurrency": "std.Thread",
+  "systems-tools": "std.process", "encoding-text-processing": "std.unicode",
+  "algorithms-data-structures": "std.DoublyLinkedList", "io": "std.Io",
 };
 function renderCookbookStdLinks() {
   if (!current || !current.id) return;
-  const chapter = current.id.slice(0, 2);
+  const chapter = current.id.split("__")[0];
   const apis = new Set();
   for (const m2 of (current.original || "").matchAll(/std\.[A-Za-z_][A-Za-z0-9_.]*/g)) {
     const parts = m2[0].split(".");
