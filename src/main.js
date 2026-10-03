@@ -494,7 +494,7 @@ $("#btnHint").onclick = () => {
 /* ---------- chat ---------- */
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-marked.setOptions({ breaks: true, gfm: true });
+marked.setOptions({ breaks: false, gfm: true });  // 标准 CommonMark：单换行不断行，空行才分段
 
 function renderMd(text) {
   const html = DOMPurify.sanitize(marked.parse(text || ""), {
