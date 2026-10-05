@@ -217,6 +217,8 @@ def check_output(ex, p):
 
 def run_exercise(ex, code):
     path = os.path.join(WORK, ex["file"])
+    # link_libc 练习涉及 C 编译与链接，首次耗时远超普通练习
+    timeout = 150 if ex.get("link_libc") else RUN_TIMEOUT
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(code)
@@ -224,7 +226,7 @@ def run_exercise(ex, code):
         cmd = [zig_exe(), "run", *libc, path]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=RUN_TIMEOUT, env=ZIG_ENV, cwd=ROOT)
+                               timeout=timeout, env=ZIG_ENV, cwd=ROOT)
         except subprocess.TimeoutExpired:
             return {"passed": False, "timeout": True,
                     "stderr": f"Timed out after {RUN_TIMEOUT}s."}
