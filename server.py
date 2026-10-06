@@ -219,17 +219,28 @@ def run_exercise(ex, code):
     path = os.path.join(WORK, ex["file"])
     # link_libc 练习涉及 C 编译与链接，首次耗时远超普通练习
     timeout = 150 if ex.get("link_libc") else RUN_TIMEOUT
+    # 测试式练习（含 test 块且无 main）：用 zig test 运行，全部通过即判过
+    is_test = re.search(r'\btest\s+"', code) and not re.search(r"pub\s+fn\s+main", code)
     with _lock:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(code)
         libc = ["-lc"] if ex.get("link_libc") else []
-        cmd = [zig_exe(), "run", *libc, path]
+        if is_test:
+            cmd = [zig_exe(), "test", *libc, path]
+        else:
+            cmd = [zig_exe(), "run", *libc, path]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=timeout, env=ZIG_ENV, cwd=ROOT)
         except subprocess.TimeoutExpired:
             return {"passed": False, "timeout": True,
-                    "stderr": f"Timed out after {RUN_TIMEOUT}s."}
+                    "stderr": f"Timed out after {timeout}s."}
+    if is_test:
+        # zig test 成功时输出 "All N tests passed."
+        return {"passed": p.returncode == 0, "returncode": p.returncode,
+                "stdout": p.stdout, "stderr": p.stderr,
+                "outputSeen": (p.stdout + p.stderr).strip(), "expected": ex.get("output", ""),
+                "testMode": True}
     passed, got = False, p.stdout
     try:
         passed, got = check_output(ex, p)

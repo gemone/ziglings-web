@@ -158,6 +158,6 @@ def list_recipes(lang="zh-CN"):
 
 
 def get_recipe(rid, lang="zh-CN"):
-    if not re.fullmatch(r"\d\d-\d\d-[a-z0-9-]+", rid):
+    if not re.fullmatch(r"[a-z0-9-]+(?:__[a-z0-9-]+)*", rid):
         raise ValueError("bad recipe id")
     return parse_recipe(rid, lang)
