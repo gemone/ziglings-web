@@ -633,11 +633,37 @@ async function sendChat(extraContext) {
   chatLog.scrollTop = chatLog.scrollHeight;
 }
 function systemMessages() {
-  if (!current) return [{ role: "system", content: "你是 Zig 语言的助教，用简体中文回答，简洁、循序渐进，鼓励学生自己思考。" }];
-  if (current.scratch) return [{
+  const base = "你是 Zig 语言的助教，用简体中文回答，简洁、循序渐进，鼓励学生自己思考。";
+  if (!current) return [{ role: "system", content: base }];
+
+  // Zig by Example 页面：带讲解正文与代码
+  if (current.zbe) return [{
+    role: "system",
+    content: `你是「Zig by Example」示例页的 Zig 助教，用简体中文回答。\n` +
+      `当前示例：${current.title}\n` +
+      `讲解正文：\n${current.prose || ""}\n\n` +
+      `学生当前代码：\n\`\`\`zig\n${code()}\n\`\`\`\n` +
+      `帮助解释语法、std API 用法和报错信息；除非用户明确要求，不要直接重写全部代码。`,
+  }];
+
+  // Cookbook 配方：带讲解正文、参考实现与挑战状态
+  if (current.file.startsWith("cookbook_")) return [{
+    role: "system",
+    content: `你是 zig-cookbook 配方页的 Zig 助教，用简体中文回答。\n` +
+      `当前配方：${current.title}\n` +
+      (current.prose ? `讲解正文：\n${current.prose}\n\n` : "") +
+      (recipeMode === "challenge" ? `用户正在进行挑战模式：从零实现任务，输出需与参考实现一致。多给提示，不要直接给完整答案。\n\n` : "") +
+      `学生当前代码：\n\`\`\`zig\n${code()}\n\`\`\`` +
+      (lastResult && !lastResult.passed && lastResult.stderr ? `\n最近的编译/运行输出：\n${lastResult.stderr.slice(0, 3000)}` : "")
+  }];
+
+  // 实验场
+  if (current.scratch && current.file === "scratch.zig") return [{
     role: "system",
     content: "你是 Zig 实验场的助教，用简体中文回答。用户在自由练习 Zig 代码，帮助解释语法、std API 用法和报错信息。",
-    }];
+  }];
+
+  // ziglings 练习
   return [{
     role: "system",
     content: `你是 Ziglings 练习题的 Zig 助教，用简体中文回答。风格：引导式教学，先解释概念，多给提示，除非学生明确要求否则不要直接给出完整答案。` +
@@ -1268,6 +1294,12 @@ $("#btnLang").onclick = () => {
   location.reload();
 };
 
+$("#btnDock").onclick = () => {
+  document.body.classList.toggle("dock-hidden");
+  localStorage.setItem("dockHidden", document.body.classList.contains("dock-hidden") ? "1" : "0");
+  if (editor) editor.view.requestMeasure();
+};
+
 /* ---------- 可拖拽分栏 ---------- */
 function setupSplit(handle, axis, getStart, apply, invert = false) { // axis: "x" | "y"
   handle.addEventListener("pointerdown", (e) => {
@@ -1503,7 +1535,6 @@ async function markCookbookDone(id, done) {
   }
 }
 if (localStorage.getItem("dockHidden") === "1") document.body.classList.add("dock-hidden");
-if (window.innerWidth < 1080) document.body.classList.add("dock-hidden");
 
 /* ---------- boot：恢复上次的内容源与页面 ---------- */
 $("#exTitle").textContent = t("pickExercise");
