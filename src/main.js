@@ -856,6 +856,7 @@ async function loadSourceContent(mode) {
 }
 
 async function switchSource(mode) {
+  localStorage.setItem("source", mode);   // 记住当前内容源，刷新后恢复
   cookbookMode = (mode === "cookbook");
   zbeMode = (mode === "zbe");
   current = null;
@@ -948,6 +949,7 @@ async function selectZbePage(slug) {
   });
   $("#outputCard").classList.add("hidden");
   $("#runStatus").textContent = "";
+  localStorage.setItem("lastZbe", slug);    // 记住当前 ZBE 页
   $("#btnSubmit").style.display = "none";
   $("#btnHint").style.display = "none";
   const mcb = $("#btnModeChallenge"), mpg = $("#btnModePlayground");
@@ -996,6 +998,7 @@ async function selectRecipe(id) {
   syncArgsInput();
   const ab = $("#argsInput");
   if (ab) ab.value = "";
+  localStorage.setItem("lastRecipe", id);   // 记住当前配方
   renderCookbookStdLinks();
   setupRecipeModes(id);
   if (editor) editor.view.focus();
@@ -1480,9 +1483,29 @@ async function markCookbookDone(id, done) {
 if (localStorage.getItem("dockHidden") === "1") document.body.classList.add("dock-hidden");
 if (window.innerWidth < 1080) document.body.classList.add("dock-hidden");
 
-/* ---------- boot ---------- */
+/* ---------- boot：恢复上次的内容源与页面 ---------- */
 $("#exTitle").textContent = t("pickExercise");
-loadExercises().then(() => {
+const savedSource = localStorage.getItem("source") || "ziglings";
+sourceSelect.value = savedSource;
+
+loadExercises().then(async () => {
   const h = location.hash.slice(1);
+  if (savedSource === "cookbook") {
+    await switchSource("cookbook");
+    const id = localStorage.getItem("lastRecipe");
+    if (id) await selectRecipe(id);
+    return;
+  }
+  if (savedSource === "zbe") {
+    await switchSource("zbe");
+    const slug = localStorage.getItem("lastZbe");
+    if (slug) await selectZbePage(slug);
+    return;
+  }
+  if (savedSource === "scratch") {
+    await switchSource("scratch");
+    return;
+  }
+  // ziglings：hash 优先
   if (h && exercises.some(e => e.file === h)) select(h);
 });
