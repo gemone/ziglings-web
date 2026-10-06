@@ -1052,7 +1052,23 @@ async function enterPlaygroundMode() {
   $("#lesson").innerHTML = renderMd(`### 🧪 ${t("playgroundTitle")}：${current.title}${ESC}${ESC}` +
     `${draft ? t("playgroundDraftRestored") : t("playgroundRefLoaded")}${ESC}${ESC}${t("playgroundFreeTip")}`);
 }
+function setupDoneButton(id) {
+  let btn = $("#btnDone");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = "btnDone";
+    $("#runRow").appendChild(btn);
+  }
+  const isDone = !!(cookbookList || []).find(x => x.id === id && x.done);
+  btn.textContent = isDone ? "↺ 取消完成" : t("markDone");
+  btn.title = "手动标注该配方的学习状态（不影响判题）";
+  btn.onclick = () => {
+    markCookbookDone(id, !isDone).then(() => setupDoneButton(id));
+  };
+}
+
 function setupRecipeModes(id) {
+  setupDoneButton(id);
   recipeMode = null;
   let cb = $("#btnModeChallenge"), pg = $("#btnModePlayground");
   if (!cb) {
