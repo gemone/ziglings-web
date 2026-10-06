@@ -791,6 +791,7 @@ async function ensureCookbookList() {
   return cookbookList;
 }
 function renderCookbookList(filter = "") {
+  if (!Array.isArray(cookbookList)) throw new Error(t("sourceLoadFail"));
   const ul = $("#exList");
   syncSourceSelect();
   ul.innerHTML = "";
@@ -837,6 +838,7 @@ async function loadSourceContent(mode) {
     $("#exTitle").textContent = "📖 zig-cookbook — " + t("cookbookSub");
     $("#lesson").textContent = t("cookbookHome");
   } else if (mode === "zbe") {
+    zbeList = await (await fetch("/api/zbe")).json();   // 拉取页面清单
     await ensureZbeProgress();
     renderZbeList($("#search").value);
     $("#exTitle").textContent = "📘 Zig by Example";
@@ -869,17 +871,20 @@ async function switchSource(mode) {
   try {
     await loadSourceContent(mode);
   } catch (e) {
-    // 自动重试一次（网络抖动常见）
-    await new Promise(r => setTimeout(r, 1500));
-    try {
-      await loadSourceContent(mode);
-    } catch (e2) {
-      // 重试仍失败：回退到 ziglings 并提示
-      cookbookMode = false; zbeMode = false;
-      renderList($("#search").value);
-      $("#exTitle").textContent = "⚠ " + String(e2).slice(0, 60);
-      $("#lesson").textContent = t("sourceLoadFail");
+    // 网络抖动：自动重试两次（间隔递增）
+    for (const wait of [2000, 4000]) {
+      await new Promise(r => setTimeout(r, wait));
+      try {
+        await loadSourceContent(mode);
+        sourceSelect.disabled = false;
+        syncSourceSelect();
+        return;
+      } catch (e2) { /* 继续重试 */ }
     }
+    // 重试仍失败：回退到 ziglings 并提示
+    cookbookMode = false; zbeMode = false;
+    renderList($("#search").value);
+    $("#exTitle").textContent = "⚠ " + t("sourceLoadFail");
   } finally {
     sourceSelect.disabled = false;   // 失败也不能永久禁用下拉
   }
@@ -914,6 +919,7 @@ async function ensureZbeProgress() {
 }
 
 function renderZbeList(filter = "") {
+  if (!Array.isArray(zbeList)) throw new Error(t("sourceLoadFail"));
   const ul = $("#exList");
   syncSourceSelect();
   ul.innerHTML = "";
