@@ -909,6 +909,7 @@ async function switchSource(mode) {
     }
     // 重试仍失败：回退到 ziglings 并提示
     cookbookMode = false; zbeMode = false;
+    localStorage.setItem("source", "ziglings");   // 重置持久化的源，避免刷新后重试死源
     renderList($("#search").value);
     $("#exTitle").textContent = "⚠ " + t("sourceLoadFail");
   } finally {
@@ -1546,13 +1547,19 @@ loadExercises().then(async () => {
   if (savedSource === "cookbook") {
     await switchSource("cookbook");
     const id = localStorage.getItem("lastRecipe");
-    if (id) await selectRecipe(id);
+    if (id) {
+      try { await selectRecipe(id); }
+      catch (e) { console.warn("保存的配方已失效:", id); }
+    }
     return;
   }
   if (savedSource === "zbe") {
     await switchSource("zbe");
     const slug = localStorage.getItem("lastZbe");
-    if (slug) await selectZbePage(slug);
+    if (slug) {
+      try { await selectZbePage(slug); }
+      catch (e) { console.warn("保存的 ZBE 页已失效:", slug); }
+    }
     return;
   }
   if (savedSource === "scratch") {

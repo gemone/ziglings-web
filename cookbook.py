@@ -28,6 +28,7 @@ CHAPTER_DIRS = {
     "concurrency": ("并发", "Concurrency"),
     "systems-tools": ("系统与工具", "Systems & tools"),
     "encoding-text-processing": ("编码与文本处理", "Encoding & text processing"),
+    "io": ("输入与输出", "I/O"),
     "algorithms-data-structures": ("算法与数据结构", "Algorithms & data structures"),
     "database": ("数据库", "Databases"),
     "general": ("综合", "General"),
@@ -105,7 +106,8 @@ _CODE_REF = re.compile(r"siteAsset\('([^']+)'\)")
 
 def parse_recipe(rid, lang="zh-CN"):
     """Parse one recipe: {id, chapter, title, prose, code}."""
-    smd, _ = fetch_cached(f"src/{lang}/{rid}.smd")
+    relpath = rid.replace("__", "/")  # id 的 __ 分隔符还原为目录斜杠
+    smd, _ = fetch_cached(f"src/{lang}/{relpath}.smd")
     title_m = _FM_TITLE.search(smd)
     title = title_m.group(1) if title_m else rid
     # 去掉 front-matter（第二行 --- 之后为正文）
@@ -136,8 +138,13 @@ def list_recipes(lang="zh-CN"):
     snapshot = _cache_path(f"__list_{lang}__")
     if os.path.isfile(snapshot) and time.time() - os.path.getmtime(snapshot) < TTL:
         cached = json.load(open(snapshot, encoding="utf-8"))
-        if cached:  # 空快照是历史解析失败的产物，忽略重拉
-            return cached
+        if isinstance(cached, list) and cached:
+            # id 集合与当前不一致 = 上游结构变更或旧格式残留 → 忽略重拉
+            current_ids = {x["id"] for x in _recipe_ids()}
+            if all(isinstance(r, dict) and r.get("id") in current_ids for r in cached):
+                return cached
+        if os.path.exists(snapshot):
+            os.remove(snapshot)  # 空/损坏/过期格式的快照，重建
         os.remove(snapshot)
     out = []
     for rid in _recipe_ids():

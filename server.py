@@ -716,6 +716,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/cookbook/done":
             b = self._json_body()
             rid = b.get("id") or ""
+            if not re.fullmatch(r"[a-z0-9-]+(?:__[a-z0-9-]+)*", rid):
+                return self._send(400, json.dumps({"error": "bad id"}))
             with _lock:
                 progress = load_json(os.path.join(ROOT, "work", "cookbook_progress.json"), {})
                 if b.get("done"):
