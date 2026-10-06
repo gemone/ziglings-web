@@ -1,52 +1,26 @@
 {
- "10-01-json": {
+ "encoding-text-processing__json": {
   "note": "解析 JSON 并打印字段，再把修改后的对象序列化输出",
   "code": "const std = @import(\"std\");\nconst json = std.json;\nconst print = std.debug.print;\n\npub fn main(init: std.process.Init) !void {\n    const allocator = init.gpa;\n\n    const json_str =\n        \\\\{\n        \\\\  \"userid\": 103609,\n        \\\\  \"verified\": true,\n        \\\\  \"access_privileges\": [\n        \\\\    \"user\",\n        \\\\    \"admin\"\n        \\\\  ]\n        \\\\}\n    ;\n    const T = struct { userid: i32, verified: bool, access_privileges: [][]u8 };\n    const parsed = try json.parseFromSlice(T, allocator, json_str, .{});\n    defer parsed.deinit();\n\n    var value = parsed.value;\n\n    print(\"userid: {d}\\n\", .{value.userid});\n    print(\"verified: {}\\n\", .{value.verified});\n    print(\"access_privileges[0]: {s}\\n\", .{value.access_privileges[0]});\n    print(\"access_privileges[1]: {s}\\n\", .{value.access_privileges[1]});\n\n    value.verified = false;\n    var out = std.Io.Writer.Allocating.init(allocator);\n    defer out.deinit();\n    var stringifier = json.Stringify{\n        .writer = &out.writer,\n        .options = .{ .whitespace = .indent_2 },\n    };\n    try stringifier.write(value);\n\n    print(\"serialized:\\n{s}\\n\", .{out.writer.buffered()});\n}\n"
  },
- "10-03-base64": {
+ "encoding-text-processing__base64": {
   "note": "Base64 编码字符串并解码还原，打印两步结果",
   "code": "const std = @import(\"std\");\nconst print = std.debug.print;\nconst Encoder = std.base64.standard.Encoder;\nconst Decoder = std.base64.standard.Decoder;\n\npub fn main(init: std.process.Init) !void {\n    const allocator = init.gpa;\n\n    const src = \"hello zig\";\n\n    const encoded_length = Encoder.calcSize(src.len);\n    const encoded_buffer = try allocator.alloc(u8, encoded_length);\n    defer allocator.free(encoded_buffer);\n\n    _ = Encoder.encode(encoded_buffer, src);\n    print(\"encoded: {s}\\n\", .{encoded_buffer});\n\n    const decoded_length = try Decoder.calcSizeForSlice(encoded_buffer);\n    const decoded_buffer = try allocator.alloc(u8, decoded_length);\n    defer allocator.free(decoded_buffer);\n\n    try Decoder.decode(decoded_buffer, encoded_buffer);\n    print(\"decoded: {s}\\n\", .{decoded_buffer});\n}\n"
  },
- "09-01-semver": {
+ "systems-tools__semver": {
   "note": "解析语义化版本字符串并打印各部分与比较结果",
   "code": "const std = @import(\"std\");\nconst print = std.debug.print;\n\npub fn main() !void {\n    const version = try std.SemanticVersion.parse(\"0.2.6\");\n\n    print(\"parsed: {d}.{d}.{d}\\n\", .{ version.major, version.minor, version.patch });\n\n    const order = version.order(.{\n        .major = 0,\n        .minor = 2,\n        .patch = 6,\n        .pre = null,\n        .build = null,\n    });\n    print(\"order == eq: {}\\n\", .{order == .eq});\n}\n"
  },
- "15-02-string": {
+ "encoding-text-processing__string": {
   "note": "字符串解析：整数/浮点/进制前缀/字符串转枚举，打印每个结果",
   "code": "const std = @import(\"std\");\nconst print = std.debug.print;\nconst parseInt = std.fmt.parseInt;\nconst parseFloat = std.fmt.parseFloat;\nconst stringToEnum = std.meta.stringToEnum;\n\nconst Color = enum { Red, Blue, Green };\n\npub fn main() !void {\n    print(\"parseInt 123 = {d}\\n\", .{try parseInt(i32, \"123\", 10)});\n    print(\"parseInt -123 = {d}\\n\", .{try parseInt(i32, \"-123\", 10)});\n\n    if (parseInt(u4, \"123\", 10)) |_| {\n        print(\"parseInt u4 123 unexpectedly succeeded\\n\", .{});\n    } else |err| {\n        print(\"parseInt u4 123 error: {s}\\n\", .{@errorName(err)});\n    }\n\n    print(\"parseInt 0xF (auto base) = {d}\\n\", .{try parseInt(i32, \"0xF\", 0)});\n    print(\"parseInt 0b1111 (auto base) = {d}\\n\", .{try parseInt(i32, \"0b1111\", 0)});\n    print(\"parseInt 0o17 (auto base) = {d}\\n\", .{try parseInt(i32, \"0o17\", 0)});\n\n    print(\"parseFloat 1.23 = {d}\\n\", .{try parseFloat(f32, \"1.23\")});\n    print(\"parseFloat -1.23 = {d}\\n\", .{try parseFloat(f32, \"-1.23\")});\n\n    print(\"stringToEnum Color Red = {s}\\n\", .{@tagName(stringToEnum(Color, \"Red\").?)});\n    print(\"stringToEnum Color Yello is null: {}\\n\", .{stringToEnum(Color, \"Yello\") == null});\n}\n"
  },
- "02-01-sha-digest": {
+ "cryptography__sha-digest": {
   "note": "计算 tests/zig-zen.txt 的 SHA-256 摘要并打印十六进制",
   "code": "const std = @import(\"std\");\nconst print = std.debug.print;\nconst Sha256 = std.crypto.hash.sha2.Sha256;\n\nconst BUF_SIZE = 16;\n\nfn sha256_digest(\n    file: std.Io.File,\n    io: std.Io,\n) ![Sha256.digest_length]u8 {\n    var sha256 = Sha256.init(.{});\n    var file_buf: [BUF_SIZE]u8 = undefined;\n    var reader = file.reader(io, &file_buf);\n    var read_buf: [BUF_SIZE]u8 = undefined;\n    var n = try reader.interface.readSliceShort(&read_buf);\n    while (n != 0) {\n        sha256.update(read_buf[0..n]);\n        n = try reader.interface.readSliceShort(&read_buf);\n    }\n\n    return sha256.finalResult();\n}\n\npub fn main(init: std.process.Init) !void {\n    const gpa = init.gpa;\n    const io = init.io;\n\n    const file = try std.Io.Dir.cwd().openFile(io, \"tests/zig-zen.txt\", .{});\n    defer file.close(io);\n\n    const digest = try sha256_digest(file, io);\n    const hex_digest = try std.fmt.allocPrint(\n        gpa,\n        \"{x}\",\n        .{&digest},\n    );\n    defer gpa.free(hex_digest);\n\n    print(\"sha256(tests/zig-zen.txt) = {s}\\n\", .{hex_digest});\n}\n"
  },
- "02-02-pbkdf2": {
+ "cryptography__pbkdf2": {
   "note": "PBKDF2 派生密钥并打印十六进制",
   "code": "const std = @import(\"std\");\nconst print = std.debug.print;\nconst crypto = std.crypto;\nconst HmacSha256 = crypto.auth.hmac.sha2.HmacSha256;\n\npub fn main() !void {\n    const salt = [_]u8{ 'a', 'b', 'c' };\n    const password = \"Guess Me If You Can!\";\n    const rounds = 1_000;\n\n    var derived_key: [16]u8 = undefined;\n    try crypto.pwhash.pbkdf2(&derived_key, password, &salt, rounds, HmacSha256);\n\n    var hex_buf: [32]u8 = undefined;\n    const hex = std.fmt.bufPrint(&hex_buf, \"{x}\", .{&derived_key}) catch unreachable;\n    print(\"derived key: {s}\\n\", .{hex});\n}\n"
- },
- "__chapter_steps__": {
-  "04": [
-   "运行 TCP 服务器，记下输出里的监听端口",
-   "把 TCP 客户端的端口改成同样的值（或填进程序参数框）",
-   "运行客户端，观察两边的收发日志",
-   "进阶：把服务器改成支持多客户端（配合 07 线程章节）"
-  ],
-  "05": [
-   "运行 HTTP 示例，观察请求/输出",
-   "修改 URL 或请求体再运行",
-   "进阶：给服务端加一个自定义响应头"
-  ],
-  "14": [
-   "该章需要本地 C 库与数据库服务（参考上游 docker-compose.yml）",
-   "若环境不具备，阅读代码学习 API 用法"
-  ],
-  "07": [
-   "运行示例观察线程交错输出",
-   "多次运行，观察结果可能不同",
-   "进阶：调整线程数量或共享数据方式再观察"
-  ],
-  "08": [
-   "运行示例观察输出",
-   "对比你机器的逻辑 CPU 数量"
-  ]
  }
 }

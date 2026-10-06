@@ -525,7 +525,7 @@ class Handler(BaseHTTPRequestHandler):
             lang = "en-US" if "en" in (q.get("lang") or ["zh"]) else "zh-CN"
             if not re.fullmatch(r"[a-z0-9-]+(?:__[a-z0-9-]+)*", rid):
                 return self._send(400, json.dumps({"error": "bad id"}))
-            has_override = rid in OVERRIDES and OVERRIDES[rid].get("code")
+            has_override = bool(rid in OVERRIDES and OVERRIDES[rid].get("code"))
             challengeable = has_override  # 判题资格由覆盖层决定（需可判题的输出变体）
             expected = None
             note = None
