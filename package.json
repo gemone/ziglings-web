@@ -21,7 +21,7 @@
     "@lezer/highlight": "^1.2.4",
     "codemirror": "^6.0.2",
     "codemirror-languageserver": "^1.22.1",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "esbuild": "^0.28.2",
     "marked": "^18.0.14"
   }
